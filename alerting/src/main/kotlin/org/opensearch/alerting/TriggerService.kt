@@ -71,6 +71,11 @@ class TriggerService(val scriptService: ScriptService) {
                 for (queryId in queryIds) {
                     params[queryId] = docsToQueries[doc]!!.contains(queryId)
                 }
+
+                logger.info("params")
+                for (key in params.keys) {
+                    logger.info(key + "-" + params[key])
+                }
                 val triggered = scriptService.compile(trigger.condition, TriggerScript.CONTEXT)
                     .newInstance(params)
                     .execute(ctx)

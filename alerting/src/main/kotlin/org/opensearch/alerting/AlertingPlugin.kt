@@ -26,6 +26,7 @@ import org.opensearch.alerting.action.SearchEmailGroupAction
 import org.opensearch.alerting.action.SearchMonitorAction
 import org.opensearch.alerting.aggregation.bucketselectorext.BucketSelectorExtAggregationBuilder
 import org.opensearch.alerting.alerts.AlertIndices
+import org.opensearch.alerting.core.DocLevelQueriesIndices
 import org.opensearch.alerting.core.JobSweeper
 import org.opensearch.alerting.core.ScheduledJobIndices
 import org.opensearch.alerting.core.action.node.ScheduledJobsStatsAction
@@ -146,6 +147,7 @@ internal class AlertingPlugin : PainlessExtension, ActionPlugin, ScriptPlugin, R
     lateinit var scheduler: JobScheduler
     lateinit var sweeper: JobSweeper
     lateinit var scheduledJobIndices: ScheduledJobIndices
+    lateinit var docLevelQueriesIndices: DocLevelQueriesIndices
     lateinit var threadPool: ThreadPool
     lateinit var alertIndices: AlertIndices
     lateinit var clusterService: ClusterService
@@ -247,11 +249,12 @@ internal class AlertingPlugin : PainlessExtension, ActionPlugin, ScriptPlugin, R
             .registerConsumers()
             .registerDestinationSettings()
         scheduledJobIndices = ScheduledJobIndices(client.admin(), clusterService)
+        docLevelQueriesIndices = DocLevelQueriesIndices(client.admin(), clusterService)
         scheduler = JobScheduler(threadPool, runner)
         sweeper = JobSweeper(environment.settings(), client, clusterService, threadPool, xContentRegistry, scheduler, ALERTING_JOB_TYPES)
         this.threadPool = threadPool
         this.clusterService = clusterService
-        return listOf(sweeper, scheduler, runner, scheduledJobIndices)
+        return listOf(sweeper, scheduler, runner, scheduledJobIndices, docLevelQueriesIndices)
     }
 
     override fun getSettings(): List<Setting<*>> {

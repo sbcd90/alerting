@@ -12,6 +12,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import org.apache.http.HttpHost
+import org.apache.http.message.BasicHeader
 import org.apache.logging.log4j.LogManager
 import org.opensearch.action.bulk.BackoffPolicy
 import org.opensearch.action.index.IndexRequest
@@ -73,17 +75,23 @@ import org.opensearch.alerting.util.isBucketLevelMonitor
 import org.opensearch.alerting.util.isDocLevelMonitor
 import org.opensearch.alerting.util.updateMonitor
 import org.opensearch.client.Client
+import org.opensearch.client.RequestOptions
+import org.opensearch.client.RestClient
+import org.opensearch.client.RestHighLevelClient
 import org.opensearch.cluster.routing.ShardRouting
 import org.opensearch.cluster.service.ClusterService
 import org.opensearch.common.Strings
+import org.opensearch.common.bytes.BytesReference
 import org.opensearch.common.component.AbstractLifecycleComponent
 import org.opensearch.common.settings.Settings
 import org.opensearch.common.xcontent.NamedXContentRegistry
 import org.opensearch.common.xcontent.ToXContent
 import org.opensearch.common.xcontent.XContentBuilder
+import org.opensearch.common.xcontent.XContentFactory
 import org.opensearch.common.xcontent.XContentType
 import org.opensearch.index.query.BoolQueryBuilder
 import org.opensearch.index.query.QueryBuilders
+import org.opensearch.percolator.PercolateQueryBuilder
 import org.opensearch.rest.RestStatus
 import org.opensearch.script.Script
 import org.opensearch.script.ScriptService
@@ -94,6 +102,7 @@ import org.opensearch.search.sort.SortOrder
 import org.opensearch.threadpool.ThreadPool
 import java.io.IOException
 import java.time.Instant
+import java.util.Base64
 import java.util.UUID
 import kotlin.collections.HashMap
 import kotlin.coroutines.CoroutineContext
@@ -766,10 +775,48 @@ object MonitorRunner : JobRunner, CoroutineScope, AbstractLifecycleComponent() {
             val maxSeqNo: Long = getMaxSeqNo(index, shard)
             updatedLastRunContext[shard] = maxSeqNo.toString()
         }
+        val matchingDocs = getMatchingDocs(lastRunContext, updatedLastRunContext, index, monitor.id).toList()
+        logger.info("got docs-" + matchingDocs.size + "-" + monitor.id)
+        matchingDocs.forEach { doc ->
+            logger.info(doc.first)
+        }
 
-        val queryDocIds = mutableMapOf<DocLevelQuery, Set<String>>()
-        val docsToQueries = mutableMapOf<String, MutableList<String>>()
-        for (query in queries) {
+        if (matchingDocs.isNotEmpty()) {
+            val matchedQueriesForDocs = getMatchedQueries(matchingDocs)
+
+            val queryDocIds = mutableMapOf<DocLevelQuery, MutableSet<String>>()
+            val docsToQueries = mutableMapOf<String, MutableList<String>>()
+
+            matchedQueriesForDocs.hits?.forEach { hit ->
+                val (id, query) = Pair(
+                    hit.id,
+                    ((hit.sourceAsMap["query"] as HashMap<*, *>)["query_string"] as HashMap<*, *>)["query"]
+                )
+                logger.info("found hit-$id-$query")
+                val docLevelQuery = DocLevelQuery(id, query.toString(), "5")
+
+                val docIndices = hit.field("_percolator_document_slot").values.map { it.toString().toInt() }
+                docIndices.forEach { idx ->
+                    if (queryDocIds.containsKey(docLevelQuery)) {
+                        queryDocIds[docLevelQuery]?.add(matchingDocs[idx].first)
+                    } else {
+                        queryDocIds[docLevelQuery] = mutableSetOf(matchingDocs[idx].first)
+                    }
+
+                    if (docsToQueries.containsKey(matchingDocs[idx].first)) {
+                        docsToQueries[matchingDocs[idx].first]?.add(id)
+                    } else {
+                        docsToQueries[matchingDocs[idx].first] = mutableListOf(id)
+                    }
+                }
+            }
+
+            /*       for (doc in docsToQueries.keys) {
+            for (queryId in queryIds) {
+                logger.info(doc + "-" + queryId + "-" + docsToQueries[doc]!!.contains(queryId))
+            }
+        }*/
+/*        for (query in queries) {
             val matchingDocIds = runForEachQuery(monitor, lastRunContext, updatedLastRunContext, index, query)
             queryDocIds[query] = matchingDocIds
             matchingDocIds.forEach {
@@ -779,23 +826,25 @@ object MonitorRunner : JobRunner, CoroutineScope, AbstractLifecycleComponent() {
                     docsToQueries[it] = mutableListOf(query.id)
                 }
             }
-        }
+        }*/
 
-        val queryIds = queries.map { it.id }
+            val queryIds = queries.map { it.id }
 
-        for (trigger in monitor.triggers) {
-            val triggerCtx = DocumentLevelTriggerExecutionContext(monitor, trigger as DocumentLevelTrigger)
-            val triggerResult = triggerService.runDocLevelTrigger(monitor, trigger, triggerCtx, docsToQueries, queryIds)
+            for (trigger in monitor.triggers) {
+                val triggerCtx = DocumentLevelTriggerExecutionContext(monitor, trigger as DocumentLevelTrigger)
+                val triggerResult =
+                    triggerService.runDocLevelTrigger(monitor, trigger, triggerCtx, docsToQueries, queryIds)
 
-            logger.info("trigger results")
-            logger.info(triggerResult.triggeredDocs.toString())
+                logger.info("trigger results")
+                logger.info(triggerResult.triggeredDocs.toString())
 
-            queryDocIds.forEach {
-                val queryTriggeredDocs = it.value.intersect(triggerResult.triggeredDocs)
-                if (queryTriggeredDocs.isNotEmpty()) {
-                    val findingId = createFindings(monitor, index, it.key, queryTriggeredDocs, trigger)
-                    // TODO: check if need to create alert, if so create it and point it to FindingId
-                    // TODO: run action as well, but this mat need to be throttled based on Mo's comment for bucket level alerting
+                queryDocIds.forEach {
+                    val queryTriggeredDocs = it.value.intersect(triggerResult.triggeredDocs)
+                    if (queryTriggeredDocs.isNotEmpty()) {
+                        val findingId = createFindings(monitor, index, it.key, queryTriggeredDocs, trigger)
+                        // TODO: check if need to create alert, if so create it and point it to FindingId
+                        // TODO: run action as well, but this mat need to be throttled based on Mo's comment for bucket level alerting
+                    }
                 }
             }
         }
@@ -842,15 +891,14 @@ object MonitorRunner : JobRunner, CoroutineScope, AbstractLifecycleComponent() {
         return finding.id
     }
 
-    private suspend fun runForEachQuery(
-        monitor: Monitor,
+    private suspend fun getMatchingDocs(
         lastRunContext: MutableMap<String, Any>,
         updatedLastRunContext: MutableMap<String, Any>,
         index: String,
-        query: DocLevelQuery
-    ): Set<String> {
+        monitorId: String
+    ): Set<Pair<String, BytesReference>> {
         val count: Int = lastRunContext["shards_count"] as Int
-        val matchingDocs = mutableSetOf<String>()
+        val matchingDocs = mutableSetOf<Pair<String, BytesReference>>()
         for (i: Int in 0 until count) {
             val shard = i.toString()
             try {
@@ -859,12 +907,69 @@ object MonitorRunner : JobRunner, CoroutineScope, AbstractLifecycleComponent() {
                 val maxSeqNo: Long = updatedLastRunContext[shard].toString().toLong()
                 logger.info("MaxSeqNo of shard_$shard is $maxSeqNo")
 
-                val hits: SearchHits = searchShard(index, shard, lastRunContext[shard].toString().toLongOrNull(), maxSeqNo, query.query)
+                val hits: SearchHits = searchShard(index, shard, lastRunContext[shard].toString().toLongOrNull(), maxSeqNo, null, null, true)
                 logger.info("Search hits for shard_$shard is: ${hits.hits.size}")
 
                 if (hits.hits.isNotEmpty()) {
                     logger.info("found matches")
-                    matchingDocs.addAll(getAllDocIds(hits))
+                    matchingDocs.addAll(getAllDocs(hits, monitorId))
+                }
+            } catch (e: Exception) {
+                logger.info("Failed to run for shard $shard. Error: ${e.message}")
+                logger.debug("Failed to run for shard $shard", e)
+            }
+        }
+        return matchingDocs
+    }
+
+    private suspend fun getMatchedQueries(
+        docs: List<Pair<String, BytesReference>>
+    ): SearchResponse {
+        val percolateQueryBuilder = PercolateQueryBuilder("query", docs.map { it.second }, XContentType.JSON)
+
+        val searchRequest = SearchRequest(ScheduledJob.DOC_LEVEL_QUERIES_INDEX)
+        val searchSourceBuilder = SearchSourceBuilder()
+        searchSourceBuilder.query(percolateQueryBuilder)
+        searchRequest.source(searchSourceBuilder)
+
+        val restClient = RestHighLevelClient(
+            RestClient.builder(HttpHost("127.0.0.1", 9200, "http"))
+                .setDefaultHeaders(
+                    arrayOf(
+                        BasicHeader("Authorization", "Basic " + Base64.getEncoder().encodeToString(("admin:admin").toByteArray()))
+                    )
+                )
+        )
+
+        logger.info(client.javaClass.name)
+        val response = restClient.search(searchRequest, RequestOptions.DEFAULT)
+        restClient.close()
+        return response
+    }
+
+    private suspend fun runForEachQuery(
+        monitor: Monitor,
+        lastRunContext: MutableMap<String, Any>,
+        updatedLastRunContext: MutableMap<String, Any>,
+        index: String,
+        query: DocLevelQuery
+    ): Set<Pair<String, BytesReference>> {
+        val count: Int = lastRunContext["shards_count"] as Int
+        val matchingDocs = mutableSetOf<Pair<String, BytesReference>>()
+        for (i: Int in 0 until count) {
+            val shard = i.toString()
+            try {
+                logger.info("Monitor execution for shard: $shard")
+
+                val maxSeqNo: Long = updatedLastRunContext[shard].toString().toLong()
+                logger.info("MaxSeqNo of shard_$shard is $maxSeqNo")
+
+                val hits: SearchHits = searchShard(index, shard, lastRunContext[shard].toString().toLongOrNull(), maxSeqNo, query.query, null, true)
+                logger.info("Search hits for shard_$shard is: ${hits.hits.size}")
+
+                if (hits.hits.isNotEmpty()) {
+                    logger.info("found matches")
+                    matchingDocs.addAll(getAllDocs(hits, ""))
                 }
             } catch (e: Exception) {
                 logger.info("Failed to run for shard $shard. Error: ${e.message}")
@@ -935,23 +1040,32 @@ object MonitorRunner : JobRunner, CoroutineScope, AbstractLifecycleComponent() {
         return response.hits.hits[0].seqNo
     }
 
-    private fun searchShard(index: String, shard: String, prevSeqNo: Long?, maxSeqNo: Long, query: String): SearchHits {
+    private fun searchShard(index: String, shard: String, prevSeqNo: Long?, maxSeqNo: Long, query: String?, field: String?, fetchSource: Boolean): SearchHits {
         if (prevSeqNo?.equals(maxSeqNo) == true) {
             return SearchHits.empty()
         }
         val boolQueryBuilder = BoolQueryBuilder()
         boolQueryBuilder.filter(QueryBuilders.rangeQuery("_seq_no").gt(prevSeqNo).lte(maxSeqNo))
-        boolQueryBuilder.must(QueryBuilders.queryStringQuery(query))
+        if (query != null) {
+            boolQueryBuilder.must(QueryBuilders.queryStringQuery(query))
+        }
+
+        var searchSourceBuilder = SearchSourceBuilder()
+            .version(true)
+            .query(boolQueryBuilder)
+            .size(10000) // fixme: make this configurable.
+
+        if (field != null) {
+            searchSourceBuilder = searchSourceBuilder.fetchField(field)
+        }
+        if (!fetchSource) {
+            searchSourceBuilder = searchSourceBuilder.fetchSource(false)
+        }
 
         val request: SearchRequest = SearchRequest()
             .indices(index)
             .preference("_shards:$shard")
-            .source(
-                SearchSourceBuilder()
-                    .version(true)
-                    .query(boolQueryBuilder)
-                    .size(10000) // fixme: make this configurable.
-            )
+            .source(searchSourceBuilder)
         logger.info("Request: $request")
         val response: SearchResponse = client.search(request).actionGet()
         if (response.status() !== RestStatus.OK) {
@@ -960,7 +1074,20 @@ object MonitorRunner : JobRunner, CoroutineScope, AbstractLifecycleComponent() {
         return response.hits
     }
 
-    private fun getAllDocIds(hits: SearchHits): List<String> {
-        return hits.map { hit -> hit.id }
+    private fun getAllDocs(hits: SearchHits, monitorId: String): List<Pair<String, BytesReference>> {
+        return hits.map { hit ->
+            val sourceMap = hit.sourceAsMap
+            sourceMap["monitor_id"] = monitorId
+
+            var xContentBuilder = XContentFactory.jsonBuilder().startObject()
+            sourceMap.forEach { (k, v) ->
+                xContentBuilder = xContentBuilder.field(k, v)
+            }
+            xContentBuilder = xContentBuilder.endObject()
+
+            val sourceRef = BytesReference.bytes(xContentBuilder)
+
+            Pair(hit.id, sourceRef)
+        }
     }
 }

@@ -10,6 +10,8 @@ import org.opensearch.OpenSearchSecurityException
 import org.opensearch.OpenSearchStatusException
 import org.opensearch.action.ActionListener
 import org.opensearch.action.admin.indices.create.CreateIndexResponse
+import org.opensearch.action.bulk.BulkRequest
+import org.opensearch.action.bulk.BulkResponse
 import org.opensearch.action.get.GetRequest
 import org.opensearch.action.get.GetResponse
 import org.opensearch.action.index.IndexRequest
@@ -22,12 +24,15 @@ import org.opensearch.action.support.master.AcknowledgedResponse
 import org.opensearch.alerting.action.IndexMonitorAction
 import org.opensearch.alerting.action.IndexMonitorRequest
 import org.opensearch.alerting.action.IndexMonitorResponse
+import org.opensearch.alerting.core.DocLevelQueriesIndices
 import org.opensearch.alerting.core.ScheduledJobIndices
 import org.opensearch.alerting.core.model.ScheduledJob
 import org.opensearch.alerting.core.model.ScheduledJob.Companion.SCHEDULED_JOBS_INDEX
 import org.opensearch.alerting.core.model.ScheduledJob.Companion.SCHEDULED_JOB_TYPE
 import org.opensearch.alerting.core.model.SearchInput
 import org.opensearch.alerting.model.Monitor
+import org.opensearch.alerting.model.docLevelInput.DocLevelMonitorInput
+import org.opensearch.alerting.model.docLevelInput.DocLevelQuery
 import org.opensearch.alerting.settings.AlertingSettings
 import org.opensearch.alerting.settings.AlertingSettings.Companion.ALERTING_MAX_MONITORS
 import org.opensearch.alerting.settings.AlertingSettings.Companion.INDEX_TIMEOUT
@@ -66,6 +71,7 @@ class TransportIndexMonitorAction @Inject constructor(
     val client: Client,
     actionFilters: ActionFilters,
     val scheduledJobIndices: ScheduledJobIndices,
+    val docLevelQueriesIndices: DocLevelQueriesIndices,
     val clusterService: ClusterService,
     val settings: Settings,
     val xContentRegistry: NamedXContentRegistry
@@ -258,6 +264,18 @@ class TransportIndexMonitorAction @Inject constructor(
             } else {
                 prepareMonitorIndexing()
             }
+
+            if (!docLevelQueriesIndices.docLevelQueryIndexExists()) {
+                docLevelQueriesIndices.initDocLevelQueryIndex(object : ActionListener<CreateIndexResponse> {
+                    override fun onResponse(response: CreateIndexResponse) {
+                        onCreateMappingsResponse(response)
+                    }
+
+                    override fun onFailure(t: Exception) {
+                        actionListener.onFailure(AlertingException.wrap(t))
+                    }
+                })
+            }
         }
 
         /**
@@ -389,6 +407,9 @@ class TransportIndexMonitorAction @Inject constructor(
                             )
                             return
                         }
+                        if (request.monitor.monitorType == Monitor.MonitorType.DOC_LEVEL_MONITOR) {
+                            indexDocLevelMonitorQueries(request.monitor, response.id)
+                        }
                         actionListener.onResponse(
                             IndexMonitorResponse(
                                 response.id, response.version, response.seqNo,
@@ -398,6 +419,36 @@ class TransportIndexMonitorAction @Inject constructor(
                     }
                     override fun onFailure(t: Exception) {
                         actionListener.onFailure(AlertingException.wrap(t))
+                    }
+                }
+            )
+        }
+
+        @Suppress("UNCHECKED_CAST")
+        private fun indexDocLevelMonitorQueries(monitor: Monitor, id: String) {
+            val docLevelMonitorInput = monitor.inputs[0] as DocLevelMonitorInput
+            val queries: List<DocLevelQuery> = docLevelMonitorInput.queries
+
+            val request = BulkRequest()
+
+            queries.forEach { item ->
+                val queryString = item.query + " AND monitor_id:$id"
+
+                val indexRequest = IndexRequest(ScheduledJob.DOC_LEVEL_QUERIES_INDEX)
+                    .id(item.id)
+                    .source(mapOf("query" to mapOf("query_string" to mapOf("query" to queryString))))
+                request.add(indexRequest)
+            }
+
+            client.bulk(
+                request,
+                object : ActionListener<BulkResponse> {
+                    override fun onResponse(response: BulkResponse) {
+                        log.info("success")
+                    }
+
+                    override fun onFailure(t: Exception) {
+                        log.info("failure")
                     }
                 }
             )

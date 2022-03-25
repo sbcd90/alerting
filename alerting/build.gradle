@@ -56,6 +56,8 @@ configurations.testCompile {
 
 dependencies {
     compileOnly "org.opensearch.plugin:opensearch-scripting-painless-spi:${versions.opensearch}"
+//    compileOnly "org.opensearch.plugin:percolator-client:${versions.opensearch}"
+    compileOnly "org.opensearch.client:opensearch-rest-high-level-client:${versions.opensearch}"
 
     // OpenSearch Nanny state
     compile "org.jetbrains.kotlin:kotlin-stdlib:${kotlin_version}"
