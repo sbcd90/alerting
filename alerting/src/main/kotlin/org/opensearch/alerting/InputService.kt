@@ -34,6 +34,7 @@ import org.opensearch.script.ScriptService
 import org.opensearch.script.ScriptType
 import org.opensearch.script.TemplateScript
 import org.opensearch.search.builder.SearchSourceBuilder
+import org.opensearch.threadpool.ThreadPool
 import java.time.Instant
 
 /** Service that handles the collection of input results for Monitor executions */
@@ -41,10 +42,12 @@ class InputService(
     val client: Client,
     val scriptService: ScriptService,
     val namedWriteableRegistry: NamedWriteableRegistry,
-    val xContentRegistry: NamedXContentRegistry
+    val xContentRegistry: NamedXContentRegistry,
+    val threadPool: ThreadPool
 ) {
 
     private val logger = LogManager.getLogger(InputService::class.java)
+    private val OPENDISTRO_SECURITY_PROTECTED_INDICES_CONF_REQUEST = "_opendistro_security_protected_indices_conf_request"
 
     suspend fun collectInputResults(
         monitor: Monitor,
@@ -52,9 +55,14 @@ class InputService(
         periodEnd: Instant,
         prevResult: InputRunResults? = null
     ): InputRunResults {
+        val ctx = threadPool.threadContext.stashContext()
         return try {
             val results = mutableListOf<Map<String, Any>>()
             val aggTriggerAfterKey: MutableMap<String, TriggerAfterKey> = mutableMapOf()
+
+            if (threadPool.threadContext.getTransient<String?>(OPENDISTRO_SECURITY_PROTECTED_INDICES_CONF_REQUEST) == null) {
+                threadPool.threadContext.putTransient(OPENDISTRO_SECURITY_PROTECTED_INDICES_CONF_REQUEST, "true")
+            }
 
             // TODO: If/when multiple input queries are supported for Bucket-Level Monitor execution, aggTriggerAfterKeys will
             //  need to be updated to account for it
@@ -100,6 +108,8 @@ class InputService(
         } catch (e: Exception) {
             logger.info("Error collecting inputs for monitor: ${monitor.id}", e)
             InputRunResults(emptyList(), e)
+        } finally {
+            ctx.close()
         }
     }
 
