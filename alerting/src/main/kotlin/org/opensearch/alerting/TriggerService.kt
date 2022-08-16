@@ -112,10 +112,11 @@ class TriggerService(val scriptService: ScriptService) {
                 val aggResultBucket = AggregationResultBucket(parentBucketPath, bucketKeyValuesList, bucketDict)
                 selectedBuckets[aggResultBucket.getBucketKeysHash()] = aggResultBucket
             }
-            BucketLevelTriggerRunResult(trigger.name, null, selectedBuckets)
+            val ids = ctx.records.map { ((it["hits"] as Map<String, Any>)["hits"] as List<Map<String, Any>>).map { elem -> elem["_id"].toString() }.toString() }
+            BucketLevelTriggerRunResult(trigger.name, null, selectedBuckets, ids)
         } catch (e: Exception) {
             logger.info("Error running trigger [${trigger.id}] for monitor [${monitor.id}]", e)
-            BucketLevelTriggerRunResult(trigger.name, e, emptyMap())
+            BucketLevelTriggerRunResult(trigger.name, e, emptyMap(), emptyList())
         }
     }
 
@@ -123,7 +124,9 @@ class TriggerService(val scriptService: ScriptService) {
     private fun getBucketKeyValuesList(bucket: Map<String, Any>): List<String> {
         val keyField = Aggregation.CommonFields.KEY.preferredName
         val keyValuesList = mutableListOf<String>()
+        logger.info("hit here-" + bucket[keyField]!!::class)
         when {
+            bucket[keyField] is Int -> keyValuesList.add(bucket[keyField].toString())
             bucket[keyField] is String -> keyValuesList.add(bucket[keyField] as String)
             // In the case where the key field is an object with multiple values (such as a composite aggregation with more than one source)
             // the values will be iterated through and converted into a string

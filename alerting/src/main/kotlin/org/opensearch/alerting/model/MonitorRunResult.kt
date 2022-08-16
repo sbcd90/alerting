@@ -91,6 +91,7 @@ data class MonitorRunResult<TriggerResult : TriggerRunResult>(
 
 data class InputRunResults(
     val results: List<Map<String, Any>> = listOf(),
+    val records: List<Map<String, Any>> = listOf(),
     val error: Exception? = null,
     val aggTriggersAfterKey: MutableMap<String, TriggerAfterKey>? = null
 ) : Writeable, ToXContent {
@@ -98,6 +99,7 @@ data class InputRunResults(
     override fun toXContent(builder: XContentBuilder, params: ToXContent.Params): XContentBuilder {
         return builder.startObject()
             .field("results", results)
+            .field("records", records)
             .field("error", error?.message)
             .endObject()
     }
@@ -105,6 +107,10 @@ data class InputRunResults(
     override fun writeTo(out: StreamOutput) {
         out.writeVInt(results.size)
         for (map in results) {
+            out.writeMap(map)
+        }
+        out.writeVInt(records.size)
+        for (map in records) {
             out.writeMap(map)
         }
         out.writeException(error)
@@ -119,8 +125,13 @@ data class InputRunResults(
             for (i in 0 until count) {
                 list.add(suppressWarning(sin.readMap())) // result(map)
             }
+            val recordsCount = sin.readVInt()
+            val recordsList = mutableListOf<Map<String, Any>>()
+            for (i in 0 until recordsCount) {
+                recordsList.add(suppressWarning(sin.readMap()))
+            }
             val error = sin.readException<Exception>() // error
-            return InputRunResults(list, error)
+            return InputRunResults(list, recordsList, error)
         }
 
         @Suppress("UNCHECKED_CAST")

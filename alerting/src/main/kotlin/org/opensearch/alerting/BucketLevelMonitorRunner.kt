@@ -74,7 +74,7 @@ object BucketLevelMonitorRunner : MonitorRunner() {
         val triggerContexts = mutableMapOf<String, BucketLevelTriggerExecutionContext>()
         val nextAlerts = mutableMapOf<String, MutableMap<AlertCategory, MutableList<Alert>>>()
         var firstIteration = true
-        var firstPageOfInputResults = InputRunResults(listOf(), null)
+        var firstPageOfInputResults = InputRunResults(listOf(), listOf(), null)
         do {
             // TODO: Since a composite aggregation is being used for the input query, the total bucket count cannot be determined.
             //  If a setting is imposed that limits buckets that can be processed for Bucket-Level Monitors, we'd need to iterate over

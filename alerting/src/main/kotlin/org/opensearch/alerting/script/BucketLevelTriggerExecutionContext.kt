@@ -18,6 +18,7 @@ data class BucketLevelTriggerExecutionContext(
     override val results: List<Map<String, Any>>,
     override val periodStart: Instant,
     override val periodEnd: Instant,
+    val records: List<Map<String, Any>>,
     val dedupedAlerts: List<Alert> = listOf(),
     val newAlerts: List<Alert> = listOf(),
     val completedAlerts: List<Alert> = listOf(),
@@ -33,7 +34,7 @@ data class BucketLevelTriggerExecutionContext(
         completedAlerts: List<Alert> = listOf()
     ) : this(
         monitor, trigger, monitorRunResult.inputResults.results, monitorRunResult.periodStart, monitorRunResult.periodEnd,
-        dedupedAlerts, newAlerts, completedAlerts, monitorRunResult.scriptContextError(trigger)
+        monitorRunResult.inputResults.records, dedupedAlerts, newAlerts, completedAlerts, monitorRunResult.scriptContextError(trigger)
     )
 
     /**

@@ -458,7 +458,7 @@ fun randomDocumentLevelMonitorRunResult(): MonitorRunResult<DocumentLevelTrigger
 }
 
 fun randomInputRunResults(): InputRunResults {
-    return InputRunResults(listOf(), null)
+    return InputRunResults(listOf(), listOf(), null)
 }
 
 fun randomQueryLevelTriggerRunResult(): QueryLevelTriggerRunResult {
@@ -502,6 +502,7 @@ fun randomBucketLevelTriggerRunResult(): BucketLevelTriggerRunResult {
             aggBucket1.getBucketKeysHash() to aggBucket1,
             aggBucket2.getBucketKeysHash() to aggBucket2
         ),
+        emptyList(),
         actionResultsMap
     )
 }

@@ -59,7 +59,7 @@ class AggregationQueryRewriterTests : OpenSearchTestCase() {
         for (trigger in triggers) {
             aggTriggersAfterKey[trigger.id] = TriggerAfterKey(hashMapOf(Pair("k1", "v1"), Pair("k2", "v2")), false)
         }
-        val prevResult = InputRunResults(emptyList(), null, aggTriggersAfterKey)
+        val prevResult = InputRunResults(emptyList(), emptyList(), null, aggTriggersAfterKey)
         AggregationQueryRewriter.rewriteQuery(queryBuilder, prevResult, triggers)
         Assert.assertEquals(queryBuilder.aggregations().pipelineAggregatorFactories.size, 10)
         queryBuilder.aggregations().aggregatorFactories.forEach {

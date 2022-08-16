@@ -182,12 +182,18 @@ object DocumentLevelMonitorRunner : MonitorRunner() {
         } catch (e: Exception) {
             logger.error("Failed to start Document-level-monitor $index. Error: ${e.message}", e)
             val alertingException = AlertingException.wrap(e)
-            return monitorResult.copy(error = alertingException, inputResults = InputRunResults(emptyList(), alertingException))
+            return monitorResult.copy(error = alertingException, inputResults = InputRunResults(emptyList(), emptyList(), alertingException))
         }
 
         monitorResult = monitorResult.copy(inputResults = InputRunResults(listOf(inputRunResults)))
 
         val idQueryMap: Map<String, DocLevelQuery> = queries.associateBy { it.id }
+
+        docsToQueries.forEach {
+            val triggeredQueries = it.value.map { queryId -> idQueryMap[queryId]!! }
+            logger.info("triggeredQueries-" + triggeredQueries.size)
+            val findingId = createFindings(monitor, monitorCtx, triggeredQueries, it.key, !dryrun && monitor.id != Monitor.NO_ID)
+        }
 
         val triggerResults = mutableMapOf<String, DocumentLevelTriggerRunResult>()
         monitor.triggers.forEach {
@@ -231,6 +237,7 @@ object DocumentLevelMonitorRunner : MonitorRunner() {
         // TODO: Implement throttling for findings
         docsToQueries.forEach {
             val triggeredQueries = it.value.map { queryId -> idQueryMap[queryId]!! }
+            logger.info("triggeredQueries-" + triggeredQueries.size)
             val findingId = createFindings(monitor, monitorCtx, triggeredQueries, it.key, !dryrun && monitor.id != Monitor.NO_ID)
             findings.add(findingId)
 

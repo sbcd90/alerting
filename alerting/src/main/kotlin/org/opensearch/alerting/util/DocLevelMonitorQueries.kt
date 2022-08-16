@@ -26,6 +26,7 @@ import org.opensearch.client.Client
 import org.opensearch.cluster.service.ClusterService
 import org.opensearch.common.settings.Settings
 import org.opensearch.common.unit.TimeValue
+import org.opensearch.common.xcontent.XContentType
 
 private val log = LogManager.getLogger(DocLevelMonitorQueries::class.java)
 
@@ -42,7 +43,31 @@ class DocLevelMonitorQueries(private val client: Client, private val clusterServ
             val indexRequest = CreateIndexRequest(ScheduledJob.DOC_LEVEL_QUERIES_INDEX)
                 .mapping(docLevelQueriesMappings())
                 .settings(
-                    Settings.builder().put("index.hidden", true)
+                    Settings.builder().loadFromSource(
+                        "{\n" +
+                            "  \"index\": {\n" +
+                            "    \"hidden\": true\n" +
+                            "  },\n" +
+                            "  \"analysis\": {\n" +
+                            "    \"analyzer\": {\n" +
+                            "      \"rule_analyzer\": {\n" +
+                            "        \"tokenizer\": \"keyword\",\n" +
+                            "        \"char_filter\": [\n" +
+                            "          \"rule_ws_filter\"\n" +
+                            "        ]\n" +
+                            "      }\n" +
+                            "    },\n" +
+                            "    \"char_filter\": {\n" +
+                            "      \"rule_ws_filter\": {\n" +
+                            "        \"type\": \"pattern_replace\",\n" +
+                            "        \"pattern\": \"(_ws_)\",\n" +
+                            "        \"replacement\": \" \"\n" +
+                            "      }\n" +
+                            "    }\n" +
+                            "  }\n" +
+                            "}",
+                        XContentType.JSON
+                    )
                         .build()
                 )
             return try {
@@ -92,13 +117,14 @@ class DocLevelMonitorQueries(private val client: Client, private val clusterServ
                         )
 
                     val updatedProperties = properties.entries.associate {
-                        if (it.value.containsKey("path")) {
-                            val newVal = it.value.toMutableMap()
-                            newVal["path"] = "${it.value["path"]}_${indexName}_$monitorId"
-                            "${it.key}_${indexName}_$monitorId" to newVal
-                        } else {
-                            "${it.key}_${indexName}_$monitorId" to it.value
+                        val newVal = it.value.toMutableMap()
+                        if (it.value.containsKey("type") && it.value["type"]!! == "text") {
+                            newVal["analyzer"] = "rule_analyzer"
                         }
+                        if (it.value.containsKey("path")) {
+                            newVal["path"] = "${it.value["path"]}_${indexName}_$monitorId"
+                        }
+                        "${it.key}_${indexName}_$monitorId" to newVal
                     }
 
                     val updateMappingRequest = PutMappingRequest(ScheduledJob.DOC_LEVEL_QUERIES_INDEX)
@@ -131,6 +157,7 @@ class DocLevelMonitorQueries(private val client: Client, private val clusterServ
                                     BulkRequest().setRefreshPolicy(refreshPolicy).timeout(indexTimeout).add(indexRequests), it
                                 )
                             }
+                            log.info(bulkResponse.buildFailureMessage())
                         }
                     }
                 }

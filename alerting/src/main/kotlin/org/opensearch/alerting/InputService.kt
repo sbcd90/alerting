@@ -51,6 +51,7 @@ class InputService(
     ): InputRunResults {
         return try {
             val results = mutableListOf<Map<String, Any>>()
+            val records = mutableListOf<Map<String, Any>>()
             val aggTriggerAfterKey: MutableMap<String, TriggerAfterKey> = mutableMapOf()
 
             // TODO: If/when multiple input queries are supported for Bucket-Level Monitor execution, aggTriggerAfterKeys will
@@ -66,6 +67,7 @@ class InputService(
                         // Deep copying query before passing it to rewriteQuery since otherwise, the monitor.input is modified directly
                         // which causes a strange bug where the rewritten query persists on the Monitor across executions
                         val rewrittenQuery = AggregationQueryRewriter.rewriteQuery(deepCopyQuery(input.query), prevResult, monitor.triggers)
+                        logger.info("hit here-$rewrittenQuery")
                         val searchSource = scriptService.compile(
                             Script(
                                 ScriptType.INLINE, Script.DEFAULT_TEMPLATE_LANG,
@@ -87,6 +89,26 @@ class InputService(
                             prevResult?.aggTriggersAfterKey
                         )
                         results += searchResponse.convertToMap()
+
+                        val recordsSearchSource = scriptService.compile(
+                            Script(
+                                ScriptType.INLINE, Script.DEFAULT_TEMPLATE_LANG,
+                                "{\"query\":{\"match_all\":{}},\"stored_fields\":[]}", searchParams
+                            ),
+                            TemplateScript.CONTEXT
+                        )
+                            .newInstance(searchParams)
+                            .execute()
+
+                        val recordsSearchRequest = SearchRequest().indices(*input.indices.toTypedArray())
+                        XContentType.JSON.xContent().createParser(xContentRegistry, LoggingDeprecationHandler.INSTANCE, recordsSearchSource).use {
+                            recordsSearchRequest.source(SearchSourceBuilder.fromXContent(it))
+                        }
+
+                        val recordsSearchResponse: SearchResponse = client.suspendUntil { client.search(recordsSearchRequest, it) }
+                        records += recordsSearchResponse.convertToMap()
+
+                        logger.info("hit here-$records")
                     }
                     is ClusterMetricsInput -> {
                         logger.debug("ClusterMetricsInput clusterMetricType: ${input.clusterMetricType}")
@@ -98,10 +120,10 @@ class InputService(
                     }
                 }
             }
-            InputRunResults(results.toList(), aggTriggersAfterKey = aggTriggerAfterKey)
+            InputRunResults(results.toList(), records.toList(), aggTriggersAfterKey = aggTriggerAfterKey)
         } catch (e: Exception) {
             logger.info("Error collecting inputs for monitor: ${monitor.id}", e)
-            InputRunResults(emptyList(), e)
+            InputRunResults(emptyList(), emptyList(), e)
         }
     }
 
@@ -168,7 +190,7 @@ class InputService(
             InputRunResults(results.toList())
         } catch (e: Exception) {
             logger.info("Error collecting anomaly result inputs for monitor: ${monitor.id}", e)
-            InputRunResults(emptyList(), e)
+            InputRunResults(emptyList(), emptyList(), e)
         }
     }
 }

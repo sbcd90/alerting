@@ -15,6 +15,7 @@ data class BucketLevelTriggerRunResult(
     override var triggerName: String,
     override var error: Exception? = null,
     var aggregationResultBuckets: Map<String, AggregationResultBucket>,
+    var matchedRecords: List<String>,
     var actionResultsMap: MutableMap<String, MutableMap<String, ActionRunResult>> = mutableMapOf()
 ) : TriggerRunResult(triggerName, error) {
 
@@ -24,12 +25,14 @@ data class BucketLevelTriggerRunResult(
         sin.readString(),
         sin.readException() as Exception?, // error
         sin.readMap(StreamInput::readString, ::AggregationResultBucket),
+        sin.readStringList(),
         sin.readMap() as MutableMap<String, MutableMap<String, ActionRunResult>>
     )
 
     override fun internalXContent(builder: XContentBuilder, params: ToXContent.Params): XContentBuilder {
         return builder
             .field(AGG_RESULT_BUCKETS, aggregationResultBuckets)
+            .field(MATCHED_RECORDS, matchedRecords)
             .field(ACTIONS_RESULTS, actionResultsMap as Map<String, Any>)
     }
 
@@ -41,11 +44,13 @@ data class BucketLevelTriggerRunResult(
                 valueOut: StreamOutput, aggResultBucket: AggregationResultBucket ->
             aggResultBucket.writeTo(valueOut)
         }
+        out.writeStringCollection(matchedRecords)
         out.writeMap(actionResultsMap as Map<String, Any>)
     }
 
     companion object {
         const val AGG_RESULT_BUCKETS = "agg_result_buckets"
+        const val MATCHED_RECORDS = "matched_records"
         const val ACTIONS_RESULTS = "action_results"
 
         @JvmStatic
