@@ -5,10 +5,6 @@
 
 package org.opensearch.alerting.model
 
-import org.opensearch.alerting.core.model.SearchInput
-import org.opensearch.alerting.model.action.Action
-import org.opensearch.alerting.model.action.ActionExecutionPolicy
-import org.opensearch.alerting.model.action.Throttle
 import org.opensearch.alerting.model.destination.email.EmailAccount
 import org.opensearch.alerting.model.destination.email.EmailGroup
 import org.opensearch.alerting.randomAction
@@ -32,6 +28,10 @@ import org.opensearch.alerting.randomUser
 import org.opensearch.alerting.randomUserEmpty
 import org.opensearch.common.io.stream.BytesStreamOutput
 import org.opensearch.common.io.stream.StreamInput
+import org.opensearch.commons.alerting.model.*
+import org.opensearch.commons.alerting.model.action.Action
+import org.opensearch.commons.alerting.model.action.ActionExecutionPolicy
+import org.opensearch.commons.alerting.model.action.Throttle
 import org.opensearch.commons.authuser.User
 import org.opensearch.search.builder.SearchSourceBuilder
 import org.opensearch.test.OpenSearchTestCase

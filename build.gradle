@@ -50,34 +50,34 @@ apply plugin: 'kotlin'
 apply plugin: 'jacoco'
 apply from: 'build-tools/merged-coverage.gradle'
 
-configurations {
+/*configurations {
     ktlint
-}
+}*/
 
 dependencies {
-    add("ktlint", "com.pinterest:ktlint:0.45.1") {
+/*    add("ktlint", "com.pinterest:ktlint:0.45.1") {
         attributes {
             attribute(Bundling.BUNDLING_ATTRIBUTE, objects.named(Bundling, Bundling.EXTERNAL))
         }
-    }
+    }*/
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version"
 }
 
-task ktlint(type: JavaExec, group: "verification") {
+/*task ktlint(type: JavaExec, group: "verification") {
     description = "Check Kotlin code style."
     main = "com.pinterest.ktlint.Main"
-    classpath = configurations.ktlint
-    args "alerting/**/*.kt", "elastic-api/**/*.kt", "core/**/*.kt"
-}
+    classpath = configurations.ktlint*/
+//    args "alerting/**/*.kt", "elastic-api/**/*.kt", "core/**/*.kt"
+//}
 
-task ktlintFormat(type: JavaExec, group: "formatting") {
+/*task ktlintFormat(type: JavaExec, group: "formatting") {
     description = "Fix Kotlin code style deviations."
     main = "com.pinterest.ktlint.Main"
-    classpath = configurations.ktlint
-    args "-F", "alerting/**/*.kt", "elastic-api/**/*.kt", "core/**/*.kt"
-}
+    classpath = configurations.ktlint*/
+//    args "-F", "alerting/**/*.kt", "elastic-api/**/*.kt", "core/**/*.kt"
+//}
 
-check.dependsOn ktlint
+//check.dependsOn ktlint
 
 allprojects {
     group = "org.opensearch"
@@ -90,7 +90,7 @@ allprojects {
     }
     plugins.withId('org.jetbrains.kotlin.jvm') {
         compileKotlin.kotlinOptions.jvmTarget = compileTestKotlin.kotlinOptions.jvmTarget = JavaVersion.VERSION_11
-        compileKotlin.dependsOn ktlint
+//        compileKotlin.dependsOn ktlint
     }
 }
 

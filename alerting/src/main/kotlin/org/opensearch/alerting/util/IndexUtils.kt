@@ -17,13 +17,13 @@ import org.opensearch.common.xcontent.LoggingDeprecationHandler
 import org.opensearch.common.xcontent.NamedXContentRegistry
 import org.opensearch.common.xcontent.XContentParser
 import org.opensearch.common.xcontent.XContentType
+import org.opensearch.commons.alerting.util.IndexUtils.Companion.NO_SCHEMA_VERSION
 
 class IndexUtils {
 
     companion object {
         const val _META = "_meta"
         const val SCHEMA_VERSION = "schema_version"
-        const val NO_SCHEMA_VERSION = 0
 
         var scheduledJobIndexSchemaVersion: Int
             private set

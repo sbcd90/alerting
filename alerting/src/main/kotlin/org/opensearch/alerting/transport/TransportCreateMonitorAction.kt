@@ -13,12 +13,16 @@ import org.opensearch.alerting.core.ScheduledJobIndices
 import org.opensearch.alerting.util.DocLevelMonitorQueries
 import org.opensearch.client.Client
 import org.opensearch.cluster.service.ClusterService
+import org.opensearch.common.bytes.BytesReference
 import org.opensearch.common.inject.Inject
 import org.opensearch.common.settings.Settings
 import org.opensearch.common.xcontent.NamedXContentRegistry
+import org.opensearch.common.xcontent.ToXContent
+import org.opensearch.common.xcontent.XContentFactory
 import org.opensearch.commons.alerting.action.AlertingActions
 import org.opensearch.commons.alerting.action.CreateMonitorRequest
 import org.opensearch.commons.alerting.action.CreateMonitorResponse
+import org.opensearch.commons.utils.recreateObject
 import org.opensearch.tasks.Task
 import org.opensearch.transport.TransportService
 
@@ -36,8 +40,15 @@ class TransportCreateMonitorAction @Inject constructor(
 ) : HandledTransportAction<ActionRequest, CreateMonitorResponse>(
     AlertingActions.CREATE_ALERTING_CONFIG_NAME, transportService, actionFilters, ::CreateMonitorRequest
 ) {
-    override fun doExecute(p0: Task?, p1: ActionRequest?, p2: ActionListener<CreateMonitorResponse>?) {
+    override fun doExecute(p0: Task?, p1: ActionRequest, p2: ActionListener<CreateMonitorResponse>?) {
         log.info("hit from alerting - successful call")
+        val transformedRequest = p1 as? CreateMonitorRequest
+            ?: recreateObject(p1) { CreateMonitorRequest(it) }
+
+        val builder = XContentFactory.jsonBuilder()
+        transformedRequest.monitor?.toXContent(builder, ToXContent.EMPTY_PARAMS)
+
+        log.info(BytesReference.bytes(builder).utf8ToString())
         p2?.onResponse(CreateMonitorResponse("ab1245"))
     }
 }

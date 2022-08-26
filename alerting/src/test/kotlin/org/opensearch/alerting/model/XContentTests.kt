@@ -6,11 +6,6 @@
 package org.opensearch.alerting.model
 
 import org.opensearch.alerting.builder
-import org.opensearch.alerting.core.model.SearchInput
-import org.opensearch.alerting.model.action.Action
-import org.opensearch.alerting.model.action.ActionExecutionPolicy
-import org.opensearch.alerting.model.action.PerExecutionActionScope
-import org.opensearch.alerting.model.action.Throttle
 import org.opensearch.alerting.model.destination.email.EmailAccount
 import org.opensearch.alerting.model.destination.email.EmailGroup
 import org.opensearch.alerting.opensearchapi.string
@@ -34,6 +29,14 @@ import org.opensearch.alerting.toJsonString
 import org.opensearch.alerting.toJsonStringWithUser
 import org.opensearch.common.xcontent.ToXContent
 import org.opensearch.common.xcontent.XContentFactory
+import org.opensearch.commons.alerting.model.Monitor
+import org.opensearch.commons.alerting.model.QueryLevelTrigger
+import org.opensearch.commons.alerting.model.SearchInput
+import org.opensearch.commons.alerting.model.Trigger
+import org.opensearch.commons.alerting.model.action.Action
+import org.opensearch.commons.alerting.model.action.ActionExecutionPolicy
+import org.opensearch.commons.alerting.model.action.PerExecutionActionScope
+import org.opensearch.commons.alerting.model.action.Throttle
 import org.opensearch.commons.authuser.User
 import org.opensearch.index.query.QueryBuilders
 import org.opensearch.search.builder.SearchSourceBuilder

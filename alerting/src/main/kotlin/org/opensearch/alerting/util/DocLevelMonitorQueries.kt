@@ -17,16 +17,16 @@ import org.opensearch.action.bulk.BulkResponse
 import org.opensearch.action.index.IndexRequest
 import org.opensearch.action.support.WriteRequest.RefreshPolicy
 import org.opensearch.action.support.master.AcknowledgedResponse
-import org.opensearch.alerting.core.model.DocLevelMonitorInput
-import org.opensearch.alerting.core.model.DocLevelQuery
-import org.opensearch.alerting.core.model.ScheduledJob
-import org.opensearch.alerting.model.Monitor
 import org.opensearch.alerting.opensearchapi.suspendUntil
 import org.opensearch.client.Client
 import org.opensearch.cluster.service.ClusterService
 import org.opensearch.common.settings.Settings
 import org.opensearch.common.unit.TimeValue
 import org.opensearch.common.xcontent.XContentType
+import org.opensearch.commons.alerting.model.DocLevelMonitorInput
+import org.opensearch.commons.alerting.model.DocLevelQuery
+import org.opensearch.commons.alerting.model.Monitor
+import org.opensearch.commons.alerting.model.ScheduledJob
 
 private val log = LogManager.getLogger(DocLevelMonitorQueries::class.java)
 
@@ -116,7 +116,7 @@ class DocLevelMonitorQueries(private val client: Client, private val clusterServ
                             as Map<String, Map<String, Any>>
                         )
 
-                    val updatedProperties = properties.entries.associate {
+                    val updatedProperties = properties.entries.filter { it.value.containsKey("type") && it.value["type"]!! != "alias" }.associate {
                         val newVal = it.value.toMutableMap()
                         if (it.value.containsKey("type") && it.value["type"]!! == "text") {
                             newVal["analyzer"] = "rule_analyzer"

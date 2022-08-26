@@ -5,14 +5,14 @@
 
 package org.opensearch.alerting.model
 
-import org.opensearch.alerting.core.model.DocLevelMonitorInput
-import org.opensearch.alerting.core.model.DocLevelQuery
 import org.opensearch.alerting.opensearchapi.string
 import org.opensearch.alerting.randomDocLevelMonitorInput
 import org.opensearch.alerting.randomDocLevelQuery
 import org.opensearch.common.xcontent.ToXContent
 import org.opensearch.common.xcontent.XContentBuilder
 import org.opensearch.common.xcontent.XContentType
+import org.opensearch.commons.alerting.model.DocLevelMonitorInput
+import org.opensearch.commons.alerting.model.DocLevelQuery
 import org.opensearch.test.OpenSearchTestCase
 import java.lang.IllegalArgumentException
 
