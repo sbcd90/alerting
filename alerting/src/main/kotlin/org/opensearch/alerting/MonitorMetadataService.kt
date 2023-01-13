@@ -106,6 +106,8 @@ object MonitorMetadataService :
                 primaryTerm = response.primaryTerm
             )
         } catch (e: Exception) {
+            log.info("hit here8")
+            e.printStackTrace()
             throw AlertingException.wrap(e)
         }
     }
@@ -121,6 +123,8 @@ object MonitorMetadataService :
                 upsertMetadata(newMetadata, updating = false) to created
             }
         } catch (e: Exception) {
+            log.info("hit here6")
+            e.printStackTrace()
             throw AlertingException.wrap(e)
         }
     }
@@ -145,6 +149,8 @@ object MonitorMetadataService :
             if (e.message?.contains("no such index") == true) {
                 return null
             } else {
+                log.info("hit here5")
+                e.printStackTrace()
                 throw AlertingException.wrap(e)
             }
         }
@@ -166,6 +172,8 @@ object MonitorMetadataService :
                 return metadata
             }
         } catch (e: Exception) {
+            log.info("hit here7")
+            e.printStackTrace()
             throw AlertingException.wrap(e)
         }
     }
@@ -208,15 +216,21 @@ object MonitorMetadataService :
                 }
             }
         } catch (e: RemoteTransportException) {
+            log.info("hit here1")
+            e.printStackTrace()
             val unwrappedException = ExceptionsHelper.unwrapCause(e) as Exception
             throw AlertingException("Failed fetching index stats", RestStatus.INTERNAL_SERVER_ERROR, unwrappedException)
         } catch (e: OpenSearchSecurityException) {
+            log.info("hit here2")
+            e.printStackTrace()
             throw AlertingException(
                 "Failed fetching index stats - missing required index permissions: ${e.localizedMessage}",
                 RestStatus.INTERNAL_SERVER_ERROR,
                 e
             )
         } catch (e: Exception) {
+            log.info("hit here4")
+            e.printStackTrace()
             throw AlertingException("Failed fetching index stats", RestStatus.INTERNAL_SERVER_ERROR, e)
         }
         return lastRunContext

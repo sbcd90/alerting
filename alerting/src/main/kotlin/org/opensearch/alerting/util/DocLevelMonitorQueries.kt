@@ -354,6 +354,8 @@ class DocLevelMonitorQueries(private val client: Client, private val clusterServ
                     }
                 }
             } else {
+                log.info("hit here12")
+                unwrappedException.printStackTrace()
                 log.debug("unknown exception during PUT mapping on queryIndex: $targetQueryIndex")
                 val unwrappedException = ExceptionsHelper.unwrapCause(e) as Exception
                 throw AlertingException.wrap(unwrappedException)

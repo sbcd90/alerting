@@ -302,6 +302,8 @@ class TransportIndexMonitorAction @Inject constructor(
                         onCreateMappingsResponse(response.isAcknowledged)
                     }
                     override fun onFailure(t: Exception) {
+                        log.info("hit here9")
+                        t.printStackTrace()
                         // https://github.com/opensearch-project/alerting/issues/646
                         if (t is ResourceAlreadyExistsException && t.message?.contains("already exists") == true) {
                             scope.launch {
@@ -334,6 +336,8 @@ class TransportIndexMonitorAction @Inject constructor(
                             onUpdateMappingsResponse(response)
                         }
                         override fun onFailure(t: Exception) {
+                            log.info("hit here10")
+                            t.printStackTrace()
                             actionListener.onFailure(AlertingException.wrap(t))
                         }
                     }
@@ -508,6 +512,8 @@ class TransportIndexMonitorAction @Inject constructor(
                     )
                 )
             } catch (t: Exception) {
+                log.info("hit here11")
+                t.printStackTrace()
                 actionListener.onFailure(AlertingException.wrap(t))
             }
         }

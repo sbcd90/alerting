@@ -30,6 +30,7 @@ class AlertingException(message: String, val status: RestStatus, ex: Exception) 
         @JvmStatic
         fun wrap(ex: Exception): OpenSearchException {
             log.error("Alerting error: $ex")
+            ex.printStackTrace()
 
             var friendlyMsg = "Unknown error"
             var status = RestStatus.INTERNAL_SERVER_ERROR

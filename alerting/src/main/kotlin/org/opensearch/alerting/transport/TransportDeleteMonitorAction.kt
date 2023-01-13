@@ -168,7 +168,7 @@ class TransportDeleteMonitorAction @Inject constructor(
                     search(
                         SearchRequest(queryIndex).source(
                             SearchSourceBuilder()
-                                .size(0)
+                                .size(100)
                                 .query(
                                     QueryBuilders.boolQuery().mustNot(
                                         QueryBuilders.matchQuery("monitor_id", monitorId)
@@ -178,7 +178,13 @@ class TransportDeleteMonitorAction @Inject constructor(
                         it
                     )
                 }
+
+                log.info("hits here-")
+                searchResponse.hits.forEach { hit ->
+                    log.info(hit.sourceAsString)
+                }
                 if (searchResponse.hits.totalHits.value == 0L) {
+                    log.info("deleting index")
                     val ack: AcknowledgedResponse = client.suspendUntil {
                         client.admin().indices().delete(
                             DeleteIndexRequest(queryIndex).indicesOptions(IndicesOptions.LENIENT_EXPAND_OPEN_HIDDEN), it
@@ -188,6 +194,7 @@ class TransportDeleteMonitorAction @Inject constructor(
                         log.error("Deletion of concrete queryIndex:$queryIndex is not ack'd!")
                     }
                 } else {
+                    log.info("deleting queries")
                     // Delete all queries added by this monitor
                     val response: BulkByScrollResponse = suspendCoroutine { cont ->
                         DeleteByQueryRequestBuilder(client, DeleteByQueryAction.INSTANCE)
