@@ -7,6 +7,7 @@ package org.opensearch.alerting
 
 import org.apache.logging.log4j.LogManager
 import org.opensearch.OpenSearchStatusException
+import org.opensearch.action.ActionListener
 import org.opensearch.action.admin.indices.get.GetIndexRequest
 import org.opensearch.action.admin.indices.get.GetIndexResponse
 import org.opensearch.action.index.IndexRequest
@@ -26,6 +27,7 @@ import org.opensearch.alerting.util.AlertingException
 import org.opensearch.alerting.util.defaultToPerExecutionAction
 import org.opensearch.alerting.util.getActionExecutionPolicy
 import org.opensearch.client.Client
+import org.opensearch.client.node.NodeClient
 import org.opensearch.cluster.routing.ShardRouting
 import org.opensearch.cluster.service.ClusterService
 import org.opensearch.common.bytes.BytesReference
@@ -42,6 +44,9 @@ import org.opensearch.commons.alerting.model.Finding
 import org.opensearch.commons.alerting.model.Monitor
 import org.opensearch.commons.alerting.model.action.PerAlertActionScope
 import org.opensearch.commons.alerting.util.string
+import org.opensearch.commons.securityanalytics.SecurityAnalyticsPluginInterface
+import org.opensearch.commons.securityanalytics.action.CorrelateFindingsRequest
+import org.opensearch.commons.securityanalytics.action.CorrelateFindingsResponse
 import org.opensearch.index.query.BoolQueryBuilder
 import org.opensearch.index.query.QueryBuilders
 import org.opensearch.percolator.PercolateQueryBuilderExt
@@ -339,7 +344,32 @@ object DocumentLevelMonitorRunner : MonitorRunner() {
                 monitorCtx.client!!.index(indexRequest, it)
             }
         }
+
+        if (monitor.owner != null && monitor.owner!! == "security_analytics") {
+            correlateFinding(monitor, monitorCtx, finding)
+        }
         return finding.id
+    }
+
+    private fun correlateFinding(
+        monitor: Monitor,
+        monitorCtx: MonitorRunnerExecutionContext,
+        finding: Finding
+    ) {
+        val correlateFindingsRequest = CorrelateFindingsRequest(finding, monitor.id)
+        SecurityAnalyticsPluginInterface.correlateFinding(
+            monitorCtx.client!! as NodeClient,
+            correlateFindingsRequest,
+            object : ActionListener<CorrelateFindingsResponse> {
+                override fun onResponse(response: CorrelateFindingsResponse) {
+                    logger.info("Finding with ${finding.id}, Correlation status: ${response.getStatus().status}")
+                }
+
+                override fun onFailure(t: Exception) {
+                    logger.info("hit error-" + t.message)
+                }
+            }
+        )
     }
 
     private suspend fun updateLastRunContext(
