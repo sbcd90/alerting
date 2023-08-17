@@ -201,58 +201,68 @@ class DocLevelMonitorQueries(private val client: Client, private val clusterServ
         val docLevelMonitorInput = monitor.inputs[0] as DocLevelMonitorInput
         val queries: List<DocLevelQuery> = docLevelMonitorInput.queries
 
-        val indices = IndexUtils.resolveAllIndices(
-            docLevelMonitorInput.indices,
-            monitorCtx.clusterService!!,
-            monitorCtx.indexNameExpressionResolver!!
-        )
-
+        val indices = docLevelMonitorInput.indices
         val clusterState = clusterService.state()
 
         // Run through each backing index and apply appropriate mappings to query index
-        indices?.forEach { indexName ->
-            if (clusterState.routingTable.hasIndex(indexName)) {
-                val indexMetadata = clusterState.metadata.index(indexName)
-                if (indexMetadata.mapping()?.sourceAsMap?.get("properties") != null) {
-                    val properties = (
-                        (indexMetadata.mapping()?.sourceAsMap?.get("properties"))
-                            as MutableMap<String, Any>
-                        )
-                    // Node processor function is used to process leaves of index mappings tree
-                    //
-                    val leafNodeProcessor =
-                        fun(fieldName: String, props: MutableMap<String, Any>): Triple<String, String, MutableMap<String, Any>> {
-                            val newProps = props.toMutableMap()
-                            if (monitor.dataSources.queryIndexMappingsByType.isNotEmpty()) {
-                                val mappingsByType = monitor.dataSources.queryIndexMappingsByType
-                                if (props.containsKey("type") && mappingsByType.containsKey(props["type"]!!)) {
-                                    mappingsByType[props["type"]]?.entries?.forEach { iter: Map.Entry<String, String> ->
-                                        newProps[iter.key] = iter.value
+        indices.forEach { indexName ->
+            val concreteIndices = IndexUtils.resolveAllIndices(
+                listOf(indexName),
+                monitorCtx.clusterService!!,
+                monitorCtx.indexNameExpressionResolver!!
+            )
+            val updatedIndexName = indexName.replace("*", "_")
+            val updatedProperties = mutableMapOf<String, Any>()
+            val allFlattenPaths = mutableListOf<String>()
+            var sourceIndexFieldLimit = 0L
+
+            concreteIndices.forEach { concreteIndexName ->
+                if (clusterState.routingTable.hasIndex(concreteIndexName)) {
+                    val indexMetadata = clusterState.metadata.index(concreteIndexName)
+                    if (indexMetadata.mapping()?.sourceAsMap?.get("properties") != null) {
+                        val properties = (
+                            (indexMetadata.mapping()?.sourceAsMap?.get("properties"))
+                                as MutableMap<String, Any>
+                            )
+                        // Node processor function is used to process leaves of index mappings tree
+                        //
+                        val leafNodeProcessor =
+                            fun(fieldName: String, props: MutableMap<String, Any>): Triple<String, String, MutableMap<String, Any>> {
+                                val newProps = props.toMutableMap()
+                                if (monitor.dataSources.queryIndexMappingsByType.isNotEmpty()) {
+                                    val mappingsByType = monitor.dataSources.queryIndexMappingsByType
+                                    if (props.containsKey("type") && mappingsByType.containsKey(props["type"]!!)) {
+                                        mappingsByType[props["type"]]?.entries?.forEach { iter: Map.Entry<String, String> ->
+                                            newProps[iter.key] = iter.value
+                                        }
                                     }
                                 }
+                                if (props.containsKey("path")) {
+                                    newProps["path"] = "${props["path"]}_${updatedIndexName}_$monitorId"
+                                }
+                                return Triple(fieldName, "${fieldName}_${updatedIndexName}_$monitorId", newProps)
                             }
-                            if (props.containsKey("path")) {
-                                newProps["path"] = "${props["path"]}_${indexName}_$monitorId"
-                            }
-                            return Triple(fieldName, "${fieldName}_${indexName}_$monitorId", newProps)
-                        }
-                    // Traverse and update index mappings here while extracting flatten field paths
-                    val flattenPaths = mutableListOf<String>()
-                    traverseMappingsAndUpdate(properties, "", leafNodeProcessor, flattenPaths)
-                    // Updated mappings ready to be applied on queryIndex
-                    val updatedProperties = properties
-                    // Updates mappings of concrete queryIndex. This can rollover queryIndex if field mapping limit is reached.
-                    var (updateMappingResponse, concreteQueryIndex) = updateQueryIndexMappings(
-                        monitor,
-                        monitorMetadata,
-                        indexName,
-                        updatedProperties
-                    )
-
-                    if (updateMappingResponse.isAcknowledged) {
-                        doIndexAllQueries(concreteQueryIndex, indexName, monitorId, queries, flattenPaths, refreshPolicy, indexTimeout)
+                        // Traverse and update index mappings here while extracting flatten field paths
+                        val flattenPaths = mutableListOf<String>()
+                        traverseMappingsAndUpdate(properties, "", leafNodeProcessor, flattenPaths)
+                        allFlattenPaths.addAll(flattenPaths)
+                        // Updated mappings ready to be applied on queryIndex
+                        updatedProperties.putAll(properties)
+                        sourceIndexFieldLimit += checkMaxFieldLimit(concreteIndexName)
                     }
                 }
+            }
+            // Updates mappings of concrete queryIndex. This can rollover queryIndex if field mapping limit is reached.
+            var (updateMappingResponse, concreteQueryIndex) = updateQueryIndexMappings(
+                monitor,
+                monitorMetadata,
+                updatedIndexName,
+                sourceIndexFieldLimit,
+                updatedProperties
+            )
+
+            if (updateMappingResponse.isAcknowledged) {
+                doIndexAllQueries(concreteQueryIndex, updatedIndexName, monitorId, queries, allFlattenPaths, refreshPolicy, indexTimeout)
             }
         }
     }
@@ -303,6 +313,7 @@ class DocLevelMonitorQueries(private val client: Client, private val clusterServ
         monitor: Monitor,
         monitorMetadata: MonitorMetadata,
         sourceIndex: String,
+        sourceIndexFieldLimit: Long,
         updatedProperties: MutableMap<String, Any>
     ): Pair<AcknowledgedResponse, String> {
         var targetQueryIndex = monitorMetadata.sourceToQueryIndexMapping[sourceIndex + monitor.id]
@@ -325,7 +336,7 @@ class DocLevelMonitorQueries(private val client: Client, private val clusterServ
         var updateMappingResponse = AcknowledgedResponse(false)
         try {
             // Adjust max field limit in mappings for query index, if needed.
-            checkAndAdjustMaxFieldLimit(sourceIndex, targetQueryIndex)
+            adjustMaxFieldLimitForQueryIndex(sourceIndexFieldLimit, targetQueryIndex)
             updateMappingResponse = client.suspendUntil {
                 client.admin().indices().putMapping(updateMappingRequest, it)
             }
@@ -339,7 +350,7 @@ class DocLevelMonitorQueries(private val client: Client, private val clusterServ
                     // Do queryIndex rollover
                     targetQueryIndex = rolloverQueryIndex(monitor)
                     // Adjust max field limit in mappings for new index.
-                    checkAndAdjustMaxFieldLimit(sourceIndex, targetQueryIndex)
+                    adjustMaxFieldLimitForQueryIndex(sourceIndexFieldLimit, targetQueryIndex)
                     // PUT mappings to newly created index
                     val updateMappingRequest = PutMappingRequest(targetQueryIndex)
                     updateMappingRequest.source(mapOf<String, Any>("properties" to updatedProperties))
@@ -383,22 +394,27 @@ class DocLevelMonitorQueries(private val client: Client, private val clusterServ
      * Adjusts max field limit index setting for query index if source index has higher limit.
      * This will prevent max field limit exception, when source index has more fields then query index limit
      */
-    private suspend fun checkAndAdjustMaxFieldLimit(sourceIndex: String, concreteQueryIndex: String) {
+    private suspend fun checkMaxFieldLimit(sourceIndex: String): Long {
         val getSettingsResponse: GetSettingsResponse = client.suspendUntil {
-            admin().indices().getSettings(GetSettingsRequest().indices(sourceIndex, concreteQueryIndex), it)
+            admin().indices().getSettings(GetSettingsRequest().indices(sourceIndex), it)
         }
-        val sourceIndexLimit =
-            getSettingsResponse.getSetting(sourceIndex, INDEX_MAPPING_TOTAL_FIELDS_LIMIT_SETTING.key)?.toLong() ?: 1000L
+        return getSettingsResponse.getSetting(sourceIndex, INDEX_MAPPING_TOTAL_FIELDS_LIMIT_SETTING.key)?.toLong() ?: 1000L
+    }
+
+    private suspend fun adjustMaxFieldLimitForQueryIndex(sourceIndexFieldLimit: Long, concreteQueryIndex: String) {
+        val getSettingsResponse: GetSettingsResponse = client.suspendUntil {
+            admin().indices().getSettings(GetSettingsRequest().indices(concreteQueryIndex), it)
+        }
         val queryIndexLimit =
             getSettingsResponse.getSetting(concreteQueryIndex, INDEX_MAPPING_TOTAL_FIELDS_LIMIT_SETTING.key)?.toLong() ?: 1000L
         // Our query index initially has 3 fields we defined and 5 more builtin metadata fields in mappings so we have to account for that
-        if (sourceIndexLimit > (queryIndexLimit - QUERY_INDEX_BASE_FIELDS_COUNT)) {
+        if (sourceIndexFieldLimit > (queryIndexLimit - QUERY_INDEX_BASE_FIELDS_COUNT)) {
             val updateSettingsResponse: AcknowledgedResponse = client.suspendUntil {
                 admin().indices().updateSettings(
                     UpdateSettingsRequest(concreteQueryIndex).settings(
                         Settings.builder().put(
                             INDEX_MAPPING_TOTAL_FIELDS_LIMIT_SETTING.key,
-                            sourceIndexLimit + QUERY_INDEX_BASE_FIELDS_COUNT
+                            sourceIndexFieldLimit + QUERY_INDEX_BASE_FIELDS_COUNT
                         )
                     ),
                     it
