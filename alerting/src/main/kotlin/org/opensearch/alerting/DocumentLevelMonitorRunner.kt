@@ -153,6 +153,10 @@ object DocumentLevelMonitorRunner : MonitorRunner() {
                     monitorCtx.indexNameExpressionResolver!!
                 )
                 val updatedIndexName = indexName.replace("*", "_")
+                val conflictingFields = monitorCtx.docLevelMonitorQueries!!.getAllConflictingFields(
+                    monitorCtx.clusterService!!.state(),
+                    concreteIndices
+                )
 
                 concreteIndices.forEach { concreteIndexName ->
                     // Prepare lastRunContext for each index
@@ -194,6 +198,7 @@ object DocumentLevelMonitorRunner : MonitorRunner() {
                         docExecutionContext,
                         updatedIndexName,
                         concreteIndexName,
+                        conflictingFields.toList(),
                         matchingDocIdsPerIndex?.get(concreteIndexName)
                     )
 
@@ -208,7 +213,10 @@ object DocumentLevelMonitorRunner : MonitorRunner() {
                         )
 
                         matchedQueriesForDocs.forEach { hit ->
-                            val id = hit.id.replace("_${updatedIndexName}_${monitor.id}", "")
+                            logger.info("test percolate $concreteIndexName")
+                            val id = hit.id
+                                .replace("_${updatedIndexName}_${monitor.id}", "")
+                                .replace("_${concreteIndexName}_${monitor.id}", "")
 
                             val docIndices = hit.field("_percolator_document_slot").values.map { it.toString().toInt() }
                             docIndices.forEach { idx ->
@@ -571,6 +579,7 @@ object DocumentLevelMonitorRunner : MonitorRunner() {
         docExecutionCtx: DocumentExecutionContext,
         index: String,
         concreteIndex: String,
+        conflictingFields: List<String>,
         docIds: List<String>? = null
     ): List<Pair<String, BytesReference>> {
         val count: Int = docExecutionCtx.updatedLastRunContext["shards_count"] as Int
@@ -592,7 +601,7 @@ object DocumentLevelMonitorRunner : MonitorRunner() {
                 )
 
                 if (hits.hits.isNotEmpty()) {
-                    matchingDocs.addAll(getAllDocs(hits, index, monitor.id))
+                    matchingDocs.addAll(getAllDocs(hits, index, concreteIndex, monitor.id, conflictingFields))
                 }
             } catch (e: Exception) {
                 logger.warn("Failed to run for shard $shard. Error: ${e.message}")
@@ -687,11 +696,23 @@ object DocumentLevelMonitorRunner : MonitorRunner() {
         return response.hits
     }
 
-    private fun getAllDocs(hits: SearchHits, index: String, monitorId: String): List<Pair<String, BytesReference>> {
+    private fun getAllDocs(
+        hits: SearchHits,
+        index: String,
+        concreteIndex: String,
+        monitorId: String,
+        conflictingFields: List<String>
+    ): List<Pair<String, BytesReference>> {
         return hits.map { hit ->
             val sourceMap = hit.sourceAsMap
 
-            transformDocumentFieldNames(sourceMap, "_${index}_$monitorId")
+            transformDocumentFieldNames(
+                sourceMap,
+                conflictingFields,
+                "_${index}_$monitorId",
+                "_${concreteIndex}_$monitorId",
+                ""
+            )
 
             var xContentBuilder = XContentFactory.jsonBuilder().map(sourceMap)
 
@@ -718,17 +739,36 @@ object DocumentLevelMonitorRunner : MonitorRunner() {
      */
     private fun transformDocumentFieldNames(
         jsonAsMap: MutableMap<String, Any>,
-        fieldNameSuffix: String
+        conflictingFields: List<String>,
+        fieldNameSuffixPattern: String,
+        fieldNameSuffixIndex: String,
+        fieldNamePrefix: String
     ) {
         val tempMap = mutableMapOf<String, Any>()
         val it: MutableIterator<Map.Entry<String, Any>> = jsonAsMap.entries.iterator()
         while (it.hasNext()) {
             val entry = it.next()
             if (entry.value is Map<*, *>) {
-                transformDocumentFieldNames(entry.value as MutableMap<String, Any>, fieldNameSuffix)
-            } else if (entry.key.endsWith(fieldNameSuffix) == false) {
-                tempMap["${entry.key}$fieldNameSuffix"] = entry.value
-                it.remove()
+                transformDocumentFieldNames(
+                    entry.value as MutableMap<String, Any>,
+                    conflictingFields,
+                    fieldNameSuffixPattern,
+                    fieldNameSuffixIndex,
+                    if (fieldNamePrefix == "") entry.key else "$fieldNamePrefix.${entry.key}"
+                )
+            } else if (!entry.key.endsWith(fieldNameSuffixPattern) && !entry.key.endsWith(fieldNameSuffixIndex)) {
+                var alreadyReplaced = false
+                conflictingFields.forEach { conflictingField ->
+                    if (conflictingField == "$fieldNamePrefix.${entry.key}" || (fieldNamePrefix == "" && conflictingField == entry.key)) {
+                        tempMap["${entry.key}$fieldNameSuffixIndex"] = entry.value
+                        it.remove()
+                        alreadyReplaced = true
+                    }
+                }
+                if (!alreadyReplaced) {
+                    tempMap["${entry.key}$fieldNameSuffixPattern"] = entry.value
+                    it.remove()
+                }
             }
         }
         jsonAsMap.putAll(tempMap)

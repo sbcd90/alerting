@@ -500,6 +500,259 @@ class DocumentMonitorRunnerIT : AlertingRestTestCase() {
         assertEquals("Findings saved for test monitor expected 14, 51 and 10", 3, foundFindings.size)
     }
 
+    fun `test execute monitor with indices having fields with same name but different data types`() {
+        val testIndex = createTestIndex(
+            "test1",
+            """"properties": {
+                    "source.device.port": { "type": "long" },
+                    "source.device.hwd.id": { "type": "long" },
+                    "nested_field": {
+                      "type": "nested",
+                      "properties": {
+                        "test1": {
+                          "type": "keyword"
+                        }
+                      }
+                    },
+                    "my_join_field": { 
+                      "type": "join",
+                      "relations": {
+                         "question": "answer" 
+                      }
+                   },
+                   "test_field" : { "type" : "integer" }
+                }
+            """.trimIndent()
+        )
+        var testDoc = """{
+            "source" : { "device": {"port" : 12345 } },
+            "nested_field": { "test1": "some text" },
+            "test_field": 12345
+        }"""
+
+        val docQuery1 = DocLevelQuery(
+            query = "(source.device.port:12345 AND test_field:12345) OR source.device.hwd.id:12345",
+            name = "4"
+        )
+        val docQuery2 = DocLevelQuery(
+            query = "(source.device.port:\"12345\" AND test_field:\"12345\") OR source.device.hwd.id:\"12345\"",
+            name = "5"
+        )
+        val docLevelInput = DocLevelMonitorInput("description", listOf("test*"), listOf(docQuery1, docQuery2))
+
+        val trigger = randomDocumentLevelTrigger(condition = ALWAYS_RUN)
+        val monitor = createMonitor(randomDocumentLevelMonitor(inputs = listOf(docLevelInput), triggers = listOf(trigger)))
+        assertNotNull(monitor.id)
+
+        indexDoc(testIndex, "1", testDoc)
+        executeMonitor(monitor.id)
+
+        var alerts = searchAlertsWithFilter(monitor)
+        assertEquals("Alert saved for test monitor", 1, alerts.size)
+
+        var findings = searchFindings(monitor)
+        assertEquals("Findings saved for test monitor", 1, findings.size)
+
+        // clear previous findings and alerts
+        deleteIndex(ALL_FINDING_INDEX_PATTERN)
+        deleteIndex(ALL_ALERT_INDEX_PATTERN)
+
+        indexDoc(testIndex, "2", testDoc)
+        val testIndex2 = createTestIndex("test2")
+        testDoc = """{
+            "source" : { "device": {"port" : "12345" } },
+            "nested_field": { "test1": "some text" },
+            "test_field": "12345"
+        }"""
+        indexDoc(testIndex2, "1", testDoc)
+        executeMonitor(monitor.id)
+
+        alerts = searchAlertsWithFilter(monitor)
+        assertEquals("Alert saved for test monitor", 2, alerts.size)
+
+        findings = searchFindings(monitor)
+        assertEquals("Findings saved for test monitor", 2, findings.size)
+    }
+
+    fun `test execute monitor with indices having fields with same name but different field mappings`() {
+        val testIndex = createTestIndex(
+            "test1",
+            """"properties": {
+                    "source": {
+                        "properties": {
+                            "id": {
+                                "type":"text",
+                                "analyzer":"whitespace" 
+                            }
+                        }
+                    },
+                   "test_field" : {
+                        "type":"text",
+                        "analyzer":"whitespace"
+                    }
+                }
+            """.trimIndent()
+        )
+
+        val testIndex2 = createTestIndex(
+            "test2",
+            """"properties": {
+                    "source": {
+                        "properties": {
+                            "id": {
+                                "type":"text"
+                            }
+                        }
+                    },
+                   "test_field" : {
+                        "type":"text"
+                    }
+                }
+            """.trimIndent()
+        )
+        val testDoc = """{
+            "source" : {"id" : "12345" },
+            "nested_field": { "test1": "some text" },
+            "test_field": "12345"
+        }"""
+
+        val docQuery = DocLevelQuery(
+            query = "test_field:\"12345\" AND source.id:\"12345\"",
+            name = "5"
+        )
+        val docLevelInput = DocLevelMonitorInput("description", listOf("test*"), listOf(docQuery))
+
+        val trigger = randomDocumentLevelTrigger(condition = ALWAYS_RUN)
+        val monitor = createMonitor(randomDocumentLevelMonitor(inputs = listOf(docLevelInput), triggers = listOf(trigger)))
+        assertNotNull(monitor.id)
+
+        indexDoc(testIndex, "1", testDoc)
+        indexDoc(testIndex2, "1", testDoc)
+
+        executeMonitor(monitor.id)
+
+        val alerts = searchAlertsWithFilter(monitor)
+        assertEquals("Alert saved for test monitor", 2, alerts.size)
+
+        val findings = searchFindings(monitor)
+        assertEquals("Findings saved for test monitor", 2, findings.size)
+    }
+
+    fun `test execute monitor with indices having fields with same name but different field mappings in multiple indices`() {
+        val testIndex = createTestIndex(
+            "test1",
+            """"properties": {
+                    "source": {
+                        "properties": {
+                            "device": {
+                                "properties": {
+                                    "hwd": {
+                                        "properties": {
+                                            "id": {
+                                                "type":"text",
+                                                "analyzer":"whitespace" 
+                                            }
+                                        }
+                                    } 
+                                }
+                            }
+                        }
+                    },
+                   "test_field" : {
+                        "type":"text" 
+                    }
+                }
+            """.trimIndent()
+        )
+
+        val testIndex2 = createTestIndex(
+            "test2",
+            """"properties": {
+                    "test_field" : {
+                        "type":"keyword"
+                    }
+                }
+            """.trimIndent()
+        )
+
+        val testIndex4 = createTestIndex(
+            "test4",
+            """"properties": {
+                   "source": {
+                        "properties": {
+                            "device": {
+                                "properties": {
+                                    "hwd": {
+                                        "properties": {
+                                            "id": {
+                                                "type":"text"
+                                            }
+                                        }
+                                    } 
+                                }
+                            }
+                        }
+                    },
+                   "test_field" : {
+                        "type":"text" 
+                    }
+                }
+            """.trimIndent()
+        )
+
+        val testDoc1 = """{
+            "source" : {"device" : {"hwd" : {"id" : "12345"}} },
+            "nested_field": { "test1": "some text" }
+        }"""
+        val testDoc2 = """{
+            "nested_field": { "test1": "some text" },
+            "test_field": "12345"
+        }"""
+
+        val docQuery1 = DocLevelQuery(
+            query = "test_field:\"12345\"",
+            name = "4"
+        )
+        val docQuery2 = DocLevelQuery(
+            query = "source.device.hwd.id:\"12345\"",
+            name = "5"
+        )
+
+        val docLevelInput = DocLevelMonitorInput("description", listOf("test*"), listOf(docQuery1, docQuery2))
+
+        val trigger = randomDocumentLevelTrigger(condition = ALWAYS_RUN)
+        val monitor = createMonitor(randomDocumentLevelMonitor(inputs = listOf(docLevelInput), triggers = listOf(trigger)))
+        assertNotNull(monitor.id)
+
+        indexDoc(testIndex4, "1", testDoc1)
+        indexDoc(testIndex2, "1", testDoc2)
+        indexDoc(testIndex, "1", testDoc1)
+        indexDoc(testIndex, "2", testDoc2)
+
+        executeMonitor(monitor.id)
+
+        val alerts = searchAlertsWithFilter(monitor)
+        assertEquals("Alert saved for test monitor", 4, alerts.size)
+
+        val findings = searchFindings(monitor)
+        assertEquals("Findings saved for test monitor", 4, findings.size)
+
+        val request = """{
+            "size": 0,
+            "query": {
+                "match_all": {}
+            }
+        }"""
+        val httpResponse = adminClient().makeRequest(
+            "GET", "/${monitor.dataSources.queryIndex}/_search",
+            StringEntity(request, ContentType.APPLICATION_JSON)
+        )
+        assertEquals("Search failed", RestStatus.OK, httpResponse.restStatus())
+
+        val searchResponse = SearchResponse.fromXContent(createParser(JsonXContent.jsonXContent, httpResponse.entity.content))
+        searchResponse.hits.totalHits?.let { assertEquals(5L, it.value) }
+    }
+
     fun `test no of queries generated for document-level monitor based on wildcard indexes`() {
         val testIndex = createTestIndex("test1")
         val testTime = DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(ZonedDateTime.now().truncatedTo(MILLIS))
