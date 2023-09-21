@@ -17,6 +17,7 @@ import org.opensearch.alerting.alerts.AlertIndices
 import org.opensearch.alerting.alerts.AlertMover.Companion.moveAlerts
 import org.opensearch.alerting.core.JobRunner
 import org.opensearch.alerting.core.ScheduledJobIndices
+import org.opensearch.alerting.event.listener.AlertingEventListenerModule
 import org.opensearch.alerting.model.MonitorRunResult
 import org.opensearch.alerting.model.WorkflowRunResult
 import org.opensearch.alerting.model.destination.DestinationContextFactory
@@ -114,6 +115,11 @@ object MonitorRunnerService : JobRunner, CoroutineScope, AbstractLifecycleCompon
 
     fun registerTriggerService(triggerService: TriggerService): MonitorRunnerService {
         this.monitorCtx.triggerService = triggerService
+        return this
+    }
+
+    fun registerEventListenerModule(eventListenerModule: AlertingEventListenerModule): MonitorRunnerService {
+        monitorCtx.eventListenerModule = eventListenerModule
         return this
     }
 

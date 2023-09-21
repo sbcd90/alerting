@@ -382,9 +382,9 @@ class AlertIndices(
         }
 
         // TODO call getMapping and compare actual mappings here instead of this
-        if (targetIndex == IndexUtils.lastUpdatedAlertHistoryIndex || targetIndex == IndexUtils.lastUpdatedFindingHistoryIndex) {
+/*        if (targetIndex == IndexUtils.lastUpdatedAlertHistoryIndex || targetIndex == IndexUtils.lastUpdatedFindingHistoryIndex) {
             return
-        }
+        }*/
 
         val putMappingRequest: PutMappingRequest = PutMappingRequest(targetIndex)
             .source(mapping, XContentType.JSON)

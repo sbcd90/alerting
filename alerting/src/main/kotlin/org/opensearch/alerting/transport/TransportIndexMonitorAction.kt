@@ -31,6 +31,7 @@ import org.opensearch.action.support.WriteRequest.RefreshPolicy
 import org.opensearch.action.support.master.AcknowledgedResponse
 import org.opensearch.alerting.MonitorMetadataService
 import org.opensearch.alerting.core.ScheduledJobIndices
+import org.opensearch.alerting.event.listener.AlertingEventListenerModule
 import org.opensearch.alerting.model.MonitorMetadata
 import org.opensearch.alerting.opensearchapi.suspendUntil
 import org.opensearch.alerting.service.DeleteMonitorService
@@ -47,6 +48,7 @@ import org.opensearch.alerting.util.addUserBackendRolesFilter
 import org.opensearch.alerting.util.getRoleFilterEnabled
 import org.opensearch.alerting.util.isADMonitor
 import org.opensearch.client.Client
+import org.opensearch.client.node.NodeClient
 import org.opensearch.cluster.service.ClusterService
 import org.opensearch.common.inject.Inject
 import org.opensearch.common.settings.Settings
@@ -94,7 +96,8 @@ class TransportIndexMonitorAction @Inject constructor(
     val clusterService: ClusterService,
     val settings: Settings,
     val xContentRegistry: NamedXContentRegistry,
-    val namedWriteableRegistry: NamedWriteableRegistry
+    val namedWriteableRegistry: NamedWriteableRegistry,
+    val eventListenerModule: AlertingEventListenerModule
 ) : HandledTransportAction<ActionRequest, IndexMonitorResponse>(
     AlertingActions.INDEX_MONITOR_ACTION_NAME,
     transportService,
@@ -532,6 +535,8 @@ class TransportIndexMonitorAction @Inject constructor(
                     throw t
                 }
 
+                log.info("calling ad callback")
+                eventListenerModule.eventListener().onAdCallbackCalled(client as NodeClient, indexResponse.id, user)
                 actionListener.onResponse(
                     IndexMonitorResponse(
                         indexResponse.id,

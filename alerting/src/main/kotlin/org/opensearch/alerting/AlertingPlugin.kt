@@ -24,6 +24,7 @@ import org.opensearch.alerting.core.resthandler.RestScheduledJobStatsHandler
 import org.opensearch.alerting.core.schedule.JobScheduler
 import org.opensearch.alerting.core.settings.LegacyOpenDistroScheduledJobSettings
 import org.opensearch.alerting.core.settings.ScheduledJobSettings
+import org.opensearch.alerting.event.listener.AlertingEventListenerModule
 import org.opensearch.alerting.resthandler.RestAcknowledgeAlertAction
 import org.opensearch.alerting.resthandler.RestAcknowledgeChainedAlertAction
 import org.opensearch.alerting.resthandler.RestDeleteMonitorAction
@@ -51,6 +52,7 @@ import org.opensearch.alerting.settings.LegacyOpenDistroAlertingSettings
 import org.opensearch.alerting.settings.LegacyOpenDistroDestinationSettings
 import org.opensearch.alerting.transport.TransportAcknowledgeAlertAction
 import org.opensearch.alerting.transport.TransportAcknowledgeChainedAlertAction
+import org.opensearch.alerting.transport.TransportAddEventListenerAction
 import org.opensearch.alerting.transport.TransportDeleteMonitorAction
 import org.opensearch.alerting.transport.TransportDeleteWorkflowAction
 import org.opensearch.alerting.transport.TransportExecuteMonitorAction
@@ -164,6 +166,7 @@ internal class AlertingPlugin : PainlessExtension, ActionPlugin, ScriptPlugin, R
     lateinit var alertIndices: AlertIndices
     lateinit var clusterService: ClusterService
     lateinit var destinationMigrationCoordinator: DestinationMigrationCoordinator
+    lateinit var eventListenerModule: AlertingEventListenerModule
 
     override fun getRestHandlers(
         settings: Settings,
@@ -221,7 +224,8 @@ internal class AlertingPlugin : PainlessExtension, ActionPlugin, ScriptPlugin, R
             ActionPlugin.ActionHandler(AlertingActions.INDEX_WORKFLOW_ACTION_TYPE, TransportIndexWorkflowAction::class.java),
             ActionPlugin.ActionHandler(AlertingActions.GET_WORKFLOW_ACTION_TYPE, TransportGetWorkflowAction::class.java),
             ActionPlugin.ActionHandler(AlertingActions.DELETE_WORKFLOW_ACTION_TYPE, TransportDeleteWorkflowAction::class.java),
-            ActionPlugin.ActionHandler(ExecuteWorkflowAction.INSTANCE, TransportExecuteWorkflowAction::class.java)
+            ActionPlugin.ActionHandler(ExecuteWorkflowAction.INSTANCE, TransportExecuteWorkflowAction::class.java),
+            ActionPlugin.ActionHandler(AlertingActions.EVENT_LISTENER_ACTION_TYPE, TransportAddEventListenerAction::class.java)
         )
     }
 
@@ -255,6 +259,8 @@ internal class AlertingPlugin : PainlessExtension, ActionPlugin, ScriptPlugin, R
         // Need to figure out how to use the OpenSearch DI classes rather than handwiring things here.
         val settings = environment.settings()
         alertIndices = AlertIndices(settings, client, threadPool, clusterService)
+
+        this.eventListenerModule = AlertingEventListenerModule(settings = settings, threadPool = threadPool)
         runner = MonitorRunnerService
             .registerClusterService(clusterService)
             .registerClient(client)
@@ -269,6 +275,7 @@ internal class AlertingPlugin : PainlessExtension, ActionPlugin, ScriptPlugin, R
             .registerAlertService(AlertService(client, xContentRegistry, alertIndices))
             .registerDocLevelMonitorQueries(DocLevelMonitorQueries(client, clusterService))
             .registerWorkflowService(WorkflowService(client, xContentRegistry))
+            .registerEventListenerModule(eventListenerModule)
             .registerConsumers()
             .registerDestinationSettings()
         scheduledJobIndices = ScheduledJobIndices(client.admin(), clusterService)
@@ -295,7 +302,7 @@ internal class AlertingPlugin : PainlessExtension, ActionPlugin, ScriptPlugin, R
 
         DeleteMonitorService.initialize(client)
 
-        return listOf(sweeper, scheduler, runner, scheduledJobIndices, docLevelMonitorQueries, destinationMigrationCoordinator)
+        return listOf(sweeper, scheduler, runner, scheduledJobIndices, docLevelMonitorQueries, destinationMigrationCoordinator, eventListenerModule)
     }
 
     override fun getSettings(): List<Setting<*>> {

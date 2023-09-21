@@ -34,9 +34,6 @@ import org.opensearch.cluster.routing.ShardRouting
 import org.opensearch.cluster.service.ClusterService
 import org.opensearch.common.xcontent.XContentFactory
 import org.opensearch.common.xcontent.XContentType
-import org.opensearch.commons.alerting.AlertingPluginInterface
-import org.opensearch.commons.alerting.action.PublishFindingsRequest
-import org.opensearch.commons.alerting.action.SubscribeFindingsResponse
 import org.opensearch.commons.alerting.model.ActionExecutionResult
 import org.opensearch.commons.alerting.model.Alert
 import org.opensearch.commons.alerting.model.DocLevelMonitorInput
@@ -46,7 +43,6 @@ import org.opensearch.commons.alerting.model.Finding
 import org.opensearch.commons.alerting.model.Monitor
 import org.opensearch.commons.alerting.model.action.PerAlertActionScope
 import org.opensearch.commons.alerting.util.string
-import org.opensearch.core.action.ActionListener
 import org.opensearch.core.common.bytes.BytesReference
 import org.opensearch.core.rest.RestStatus
 import org.opensearch.core.xcontent.ToXContent
@@ -487,15 +483,10 @@ object DocumentLevelMonitorRunner : MonitorRunner() {
         monitorCtx: MonitorRunnerExecutionContext,
         finding: Finding
     ) {
-        val publishFindingsRequest = PublishFindingsRequest(monitor.id, finding)
-        AlertingPluginInterface.publishFinding(
+        monitorCtx.eventListenerModule!!.eventListener().onFindingCreated(
             monitorCtx.client!! as NodeClient,
-            publishFindingsRequest,
-            object : ActionListener<SubscribeFindingsResponse> {
-                override fun onResponse(response: SubscribeFindingsResponse) {}
-
-                override fun onFailure(e: Exception) {}
-            }
+            monitor.id,
+            finding
         )
     }
 
