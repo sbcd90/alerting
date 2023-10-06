@@ -35,6 +35,7 @@ import org.opensearch.cluster.service.ClusterService
 import org.opensearch.common.xcontent.XContentFactory
 import org.opensearch.common.xcontent.XContentType
 import org.opensearch.commons.alerting.AlertingPluginInterface
+import org.opensearch.commons.alerting.action.AlertingActions
 import org.opensearch.commons.alerting.action.PublishFindingsRequest
 import org.opensearch.commons.alerting.action.SubscribeFindingsResponse
 import org.opensearch.commons.alerting.model.ActionExecutionResult
@@ -490,6 +491,7 @@ object DocumentLevelMonitorRunner : MonitorRunner() {
         val publishFindingsRequest = PublishFindingsRequest(monitor.id, finding)
         AlertingPluginInterface.publishFinding(
             monitorCtx.client!! as NodeClient,
+            AlertingActions.SUBSCRIBE_FINDINGS_ACTION_TYPE,
             publishFindingsRequest,
             object : ActionListener<SubscribeFindingsResponse> {
                 override fun onResponse(response: SubscribeFindingsResponse) {}

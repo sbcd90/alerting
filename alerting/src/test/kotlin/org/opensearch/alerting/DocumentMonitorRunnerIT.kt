@@ -41,7 +41,7 @@ class DocumentMonitorRunnerIT : AlertingRestTestCase() {
 
         val index = createTestIndex()
 
-        val docQuery = DocLevelQuery(query = "test_field:\"us-west-2\"", name = "3")
+        val docQuery = DocLevelQuery(query = "\"us-west-2\"", name = "3")
         val docLevelInput = DocLevelMonitorInput("description", listOf(index), listOf(docQuery))
 
         val action = randomAction(template = randomTemplateScript("Hello {{ctx.monitor.name}}"), destinationId = createDestination().id)
@@ -73,6 +73,32 @@ class DocumentMonitorRunnerIT : AlertingRestTestCase() {
 
         val alerts = searchAlerts(monitor)
         assertEquals("Alert saved for test monitor", 0, alerts.size)
+
+        val testDoc1 = """{
+            "message" : "us-west-2",
+            "test_strict_date_time" : "$testTime",
+            "test_field" : "This is an error from IAD region"
+        }"""
+        indexDoc(index, "2", testDoc1)
+        val response1 = executeMonitor(monitor, params = DRYRUN_MONITOR)
+
+        val output1 = entityAsMap(response1)
+        assertEquals(monitor.name, output1["monitor_name"])
+
+        assertEquals(1, output1.objectMap("trigger_results").values.size)
+
+        val testDoc2 = """{
+            "message1" : "us-west-2",
+            "test_strict_date_time" : "$testTime",
+            "test_field" : "This is an error from IAD region"
+        }"""
+        indexDoc(index, "4", testDoc2)
+        val response2 = executeMonitor(monitor, params = DRYRUN_MONITOR)
+
+        val output2 = entityAsMap(response2)
+        assertEquals(monitor.name, output2["monitor_name"])
+
+        assertEquals(1, output2.objectMap("trigger_results").values.size)
     }
 
     fun `test execute monitor returns search result with dryrun`() {
