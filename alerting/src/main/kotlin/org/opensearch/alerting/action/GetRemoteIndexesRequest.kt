@@ -7,24 +7,23 @@ package org.opensearch.alerting.action
 
 import org.opensearch.action.ActionRequest
 import org.opensearch.action.ActionRequestValidationException
-import org.opensearch.action.search.SearchRequest
 import org.opensearch.core.common.io.stream.StreamInput
 import org.opensearch.core.common.io.stream.StreamOutput
 import java.io.IOException
 
-class SearchMonitorRequest : ActionRequest {
+class GetRemoteIndexesRequest : ActionRequest {
+    var indexes: List<String> = listOf()
+    var includeMappings: Boolean
 
-    val searchRequest: SearchRequest
-
-    constructor(
-        searchRequest: SearchRequest
-    ) : super() {
-        this.searchRequest = searchRequest
+    constructor(indexes: List<String>, includeMappings: Boolean) : super() {
+        this.indexes = indexes
+        this.includeMappings = includeMappings
     }
 
     @Throws(IOException::class)
     constructor(sin: StreamInput) : this(
-        searchRequest = SearchRequest(sin)
+        sin.readStringList(),
+        sin.readBoolean()
     )
 
     override fun validate(): ActionRequestValidationException? {
@@ -33,6 +32,12 @@ class SearchMonitorRequest : ActionRequest {
 
     @Throws(IOException::class)
     override fun writeTo(out: StreamOutput) {
-        searchRequest.writeTo(out)
+        out.writeStringArray(indexes.toTypedArray())
+        out.writeBoolean(includeMappings)
+    }
+
+    companion object {
+        const val INDEXES_FIELD = "indexes"
+        const val INCLUDE_MAPPINGS_FIELD = "include_mappings"
     }
 }
