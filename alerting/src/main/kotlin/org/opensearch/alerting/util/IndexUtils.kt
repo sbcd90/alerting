@@ -16,6 +16,7 @@ import org.opensearch.cluster.metadata.IndexAbstraction
 import org.opensearch.cluster.metadata.IndexMetadata
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver
 import org.opensearch.cluster.service.ClusterService
+import org.opensearch.common.settings.Settings
 import org.opensearch.common.xcontent.LoggingDeprecationHandler
 import org.opensearch.common.xcontent.XContentType
 import org.opensearch.commons.alerting.util.IndexUtils
@@ -165,6 +166,13 @@ class IndexUtils {
         }
 
         @JvmStatic
+        fun isWarmIndex(name: String, clusterState: ClusterState): Boolean {
+            val settings = getSettingsForIndex(name, clusterState)
+            val boxType = settings.get("index.routing.allocation.require.box_type")
+            return boxType != null && boxType.equals("warm")
+        }
+
+        @JvmStatic
         fun getWriteIndex(index: String, clusterState: ClusterState): String? {
             if (isAlias(index, clusterState) || isDataStream(index, clusterState)) {
                 val metadata = clusterState.metadata.indicesLookup[index]?.writeIndex
@@ -194,6 +202,11 @@ class IndexUtils {
         @JvmStatic
         fun getCreationDateForIndex(index: String, clusterState: ClusterState): Long {
             return clusterState.metadata.index(index).creationDate
+        }
+
+        @JvmStatic
+        fun getSettingsForIndex(index: String, clusterState: ClusterState): Settings {
+            return clusterState.metadata.index(index).settings
         }
     }
 }

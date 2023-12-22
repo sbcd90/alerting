@@ -230,8 +230,10 @@ object MonitorMetadataService :
             }
 
             indices.forEach { indexName ->
-                if (!lastRunContext.containsKey(indexName)) {
-                    lastRunContext[indexName] = createRunContextForIndex(indexName)
+                if (!IndexUtils.isWarmIndex(indexName, clusterService.state())) {
+                    if (!lastRunContext.containsKey(indexName)) {
+                        lastRunContext[indexName] = createRunContextForIndex(indexName)
+                    }
                 }
             }
         } catch (e: RemoteTransportException) {

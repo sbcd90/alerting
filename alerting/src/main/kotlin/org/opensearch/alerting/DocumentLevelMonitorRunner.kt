@@ -178,60 +178,68 @@ object DocumentLevelMonitorRunner : MonitorRunner() {
                 )
 
                 concreteIndices.forEach { concreteIndexName ->
-                    // Prepare lastRunContext for each index
-                    val indexLastRunContext = lastRunContext.getOrPut(concreteIndexName) {
-                        val isIndexCreatedRecently = createdRecently(
-                            monitor,
-                            periodStart,
-                            periodEnd,
-                            monitorCtx.clusterService!!.state().metadata.index(concreteIndexName)
-                        )
-                        MonitorMetadataService.createRunContextForIndex(concreteIndexName, isIndexCreatedRecently)
-                    }
+                    if (!IndexUtils.isWarmIndex(concreteIndexName, monitorCtx.clusterService!!.state())) {
+                        // Prepare lastRunContext for each index
+                        val indexLastRunContext = lastRunContext.getOrPut(concreteIndexName) {
+                            val isIndexCreatedRecently = createdRecently(
+                                monitor,
+                                periodStart,
+                                periodEnd,
+                                monitorCtx.clusterService!!.state().metadata.index(concreteIndexName)
+                            )
+                            MonitorMetadataService.createRunContextForIndex(concreteIndexName, isIndexCreatedRecently)
+                        }
 
-                    // Prepare updatedLastRunContext for each index
-                    val indexUpdatedRunContext = updateLastRunContext(
-                        indexLastRunContext.toMutableMap(),
-                        monitorCtx,
-                        concreteIndexName
-                    ) as MutableMap<String, Any>
-                    if (IndexUtils.isAlias(indexName, monitorCtx.clusterService!!.state()) ||
-                        IndexUtils.isDataStream(indexName, monitorCtx.clusterService!!.state())
-                    ) {
-                        if (concreteIndexName == IndexUtils.getWriteIndex(indexName, monitorCtx.clusterService!!.state())) {
-                            updatedLastRunContext.remove(lastWriteIndex)
+                        // Prepare updatedLastRunContext for each index
+                        val indexUpdatedRunContext = updateLastRunContext(
+                            indexLastRunContext.toMutableMap(),
+                            monitorCtx,
+                            concreteIndexName
+                        ) as MutableMap<String, Any>
+                        if (IndexUtils.isAlias(indexName, monitorCtx.clusterService!!.state()) ||
+                            IndexUtils.isDataStream(indexName, monitorCtx.clusterService!!.state())
+                        ) {
+                            if (concreteIndexName == IndexUtils.getWriteIndex(
+                                    indexName,
+                                    monitorCtx.clusterService!!.state()
+                                )
+                            ) {
+                                updatedLastRunContext.remove(lastWriteIndex)
+                                updatedLastRunContext[concreteIndexName] = indexUpdatedRunContext
+                            }
+                        } else {
                             updatedLastRunContext[concreteIndexName] = indexUpdatedRunContext
                         }
-                    } else {
-                        updatedLastRunContext[concreteIndexName] = indexUpdatedRunContext
-                    }
 
-                    val count: Int = indexLastRunContext["shards_count"] as Int
-                    for (i: Int in 0 until count) {
-                        val shard = i.toString()
+                        val count: Int = indexLastRunContext["shards_count"] as Int
+                        for (i: Int in 0 until count) {
+                            val shard = i.toString()
 
-                        // update lastRunContext if its a temp monitor as we only want to view the last bit of data then
-                        // TODO: If dryrun, we should make it so we limit the search as this could still potentially give us lots of data
-                        if (isTempMonitor) {
-                            indexLastRunContext[shard] = max(-1, (indexUpdatedRunContext[shard] as String).toInt() - 10)
+                            // update lastRunContext if its a temp monitor as we only want to view the last bit of data then
+                            // TODO: If dryrun, we should make it so we limit the search as this could still potentially give us lots of data
+                            if (isTempMonitor) {
+                                indexLastRunContext[shard] =
+                                    max(-1, (indexUpdatedRunContext[shard] as String).toInt() - 10)
+                            }
                         }
+
+                        // Prepare DocumentExecutionContext for each index
+                        val docExecutionContext =
+                            DocumentExecutionContext(queries, indexLastRunContext, indexUpdatedRunContext)
+
+                        fetchDataAndExecutePercolateQueriesPerShard(
+                            monitor,
+                            monitorCtx,
+                            docExecutionContext,
+                            updatedIndexName,
+                            concreteIndexName,
+                            conflictingFields.toList(),
+                            matchingDocIdsPerIndex?.get(concreteIndexName),
+                            monitorMetadata,
+                            inputRunResults,
+                            docsToQueries
+                        )
                     }
-
-                    // Prepare DocumentExecutionContext for each index
-                    val docExecutionContext = DocumentExecutionContext(queries, indexLastRunContext, indexUpdatedRunContext)
-
-                    fetchDataAndExecutePercolateQueriesPerShard(
-                        monitor,
-                        monitorCtx,
-                        docExecutionContext,
-                        updatedIndexName,
-                        concreteIndexName,
-                        conflictingFields.toList(),
-                        matchingDocIdsPerIndex?.get(concreteIndexName),
-                        monitorMetadata,
-                        inputRunResults,
-                        docsToQueries
-                    )
                 }
             }
             monitorResult = monitorResult.copy(inputResults = InputRunResults(listOf(inputRunResults)))
@@ -737,7 +745,8 @@ object DocumentLevelMonitorRunner : MonitorRunner() {
         } catch (e: Exception) {
             throw IllegalStateException(
                 "Monitor ${monitor.id}: Failed to run percolate search for sourceIndex [$index] " +
-                    "and queryIndex [$queryIndex] for ${docs.size} document(s)", e
+                    "and queryIndex [$queryIndex] for ${docs.size} document(s)",
+                e
             )
         }
 
