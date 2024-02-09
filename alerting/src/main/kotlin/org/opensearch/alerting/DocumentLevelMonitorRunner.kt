@@ -262,6 +262,10 @@ object DocumentLevelMonitorRunner : MonitorRunner() {
                         conflictingFields.toList(),
                         matchingDocIdsPerIndex?.get(concreteIndexName),
                     )
+                    // map<nodeid, List<shardId>
+                    // build DocLevelMonitorFanOutRequest
+                    // groupedlistener
+                    // monitorCtx.client.send request parallel calls
 
                     fetchShardDataAndMaybeExecutePercolateQueries(
                         monitor,
@@ -359,6 +363,8 @@ object DocumentLevelMonitorRunner : MonitorRunner() {
                     "Calling upsertMetadata function from ${monitorCtx.clusterService!!.localNode().id} in " +
                         "execution $executionId"
                 )
+                // construct metadata from all nodes' fanout
+                // response
                 MonitorMetadataService.upsertMetadata(
                     monitorMetadata.copy(lastRunContext = updatedLastRunContext),
                     true
