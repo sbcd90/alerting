@@ -19,6 +19,8 @@ data class IndexExecutionContext(
     val updatedLastRunContext: MutableMap<String, Any>, // without sequence numbers
     val indexName: String,
     val concreteIndexName: String,
+    val updatedIndexNames: List<String>,
+    val concreteIndexNames: List<String>,
     val conflictingFields: List<String>,
     val docIds: List<String>? = emptyList(),
 ) : Writeable, ToXContent {
@@ -30,6 +32,8 @@ data class IndexExecutionContext(
         updatedLastRunContext = sin.readMap(),
         indexName = sin.readString(),
         concreteIndexName = sin.readString(),
+        updatedIndexNames = sin.readStringList(),
+        concreteIndexNames = sin.readStringList(),
         conflictingFields = sin.readStringList(),
         docIds = sin.readStringList()
     )
@@ -40,6 +44,8 @@ data class IndexExecutionContext(
         out.writeMap(updatedLastRunContext)
         out.writeString(indexName)
         out.writeString(concreteIndexName)
+        out.writeStringCollection(updatedIndexNames)
+        out.writeStringCollection(concreteIndexNames)
         out.writeStringCollection(conflictingFields)
         out.writeOptionalStringCollection(docIds)
     }
@@ -51,15 +57,11 @@ data class IndexExecutionContext(
             .field("updated_last_run_context", updatedLastRunContext)
             .field("index_name", indexName)
             .field("concrete_index_name", concreteIndexName)
+            .field("udpated_index_names", updatedIndexNames)
+            .field("concrete_index_names", concreteIndexNames)
             .field("conflicting_fields", conflictingFields)
             .field("doc_ids", docIds)
             .endObject()
         return builder
-    }
-
-    companion object {
-        fun readFrom(sin: StreamInput): List<IndexExecutionContext> {
-            TODO("Not yet implemented")
-        }
     }
 }

@@ -259,6 +259,8 @@ object DocumentLevelMonitorRunner : MonitorRunner() {
                         indexUpdatedRunContext,
                         updatedIndexName,
                         concreteIndexName,
+                        updatedIndexNames,
+                        concreteIndices,
                         conflictingFields.toList(),
                         matchingDocIdsPerIndex?.get(concreteIndexName),
                     )
