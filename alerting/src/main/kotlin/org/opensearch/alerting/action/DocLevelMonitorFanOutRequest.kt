@@ -40,8 +40,8 @@ class DocLevelMonitorFanOutRequest : ActionRequest, ToXContentObject {
         this.indexExecutionContexts = indexExecutionContexts
         this.shardIds = shardIds
         this.workflowRunContext = workflowRunContext
-        require(shardIds.isEmpty()) { }
-        require(indexExecutionContexts.isEmpty()) { }
+        require(false == shardIds.isEmpty()) { }
+        require(false == indexExecutionContexts.isEmpty()) { }
     }
 
     @Throws(IOException::class)
@@ -69,16 +69,17 @@ class DocLevelMonitorFanOutRequest : ActionRequest, ToXContentObject {
         workflowRunContext?.writeTo(out)
     }
 
-    override fun validate(): ActionRequestValidationException {
+    override fun validate(): ActionRequestValidationException? {
         var actionValidationException: ActionRequestValidationException? = null
         if (shardIds.isEmpty()) {
             actionValidationException = ActionRequestValidationException()
             actionValidationException.addValidationError("shard_ids is null or empty")
         }
-        if (indexExecutionContexts.isEmpty())
+        if (indexExecutionContexts.isEmpty()) {
             if (actionValidationException == null)
                 actionValidationException = ActionRequestValidationException()
-        actionValidationException!!.addValidationError("index_execution_contexts is null or empty")
+            actionValidationException.addValidationError("index_execution_contexts is null or empty")
+        }
         return actionValidationException
     }
 

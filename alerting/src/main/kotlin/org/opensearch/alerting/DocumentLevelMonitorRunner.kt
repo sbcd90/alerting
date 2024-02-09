@@ -16,7 +16,9 @@ import org.opensearch.action.search.SearchAction
 import org.opensearch.action.search.SearchRequest
 import org.opensearch.action.search.SearchResponse
 import org.opensearch.action.support.WriteRequest
+import org.opensearch.alerting.action.DocLevelMonitorFanOutAction
 import org.opensearch.alerting.action.DocLevelMonitorFanOutRequest
+import org.opensearch.alerting.action.DocLevelMonitorFanOutResponse
 import org.opensearch.alerting.model.DocumentLevelTriggerRunResult
 import org.opensearch.alerting.model.IndexExecutionContext
 import org.opensearch.alerting.model.InputRunResults
@@ -283,8 +285,15 @@ object DocumentLevelMonitorRunner : MonitorRunner() {
                         ),
                         workflowRunContext
                     )
+                    val dlmfor: DocLevelMonitorFanOutResponse = monitorCtx.client!!.suspendUntil {
+                        execute(DocLevelMonitorFanOutAction.INSTANCE, docLevelMonitorFanOutRequest1, it)
+                    }
+                    val lastRunContextFromResponse = dlmfor.lastRunContexts as MutableMap<String, MutableMap<String, Any>>
+                    lastRunContext[concreteIndexName] = lastRunContextFromResponse[concreteIndexName] as MutableMap<String, Any>
+                    logger.error(dlmfor)
                 }
             }
+
             MonitorMetadataService.upsertMetadata(
                 monitorMetadata.copy(lastRunContext = updatedLastRunContext),
                 true

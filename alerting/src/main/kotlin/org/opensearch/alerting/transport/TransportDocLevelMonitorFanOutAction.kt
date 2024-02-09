@@ -18,6 +18,7 @@ import org.opensearch.action.support.HandledTransportAction
 import org.opensearch.action.support.WriteRequest
 import org.opensearch.alerting.MonitorRunnerExecutionContext
 import org.opensearch.alerting.MonitorRunnerService
+import org.opensearch.alerting.action.DocLevelMonitorFanOutAction
 import org.opensearch.alerting.action.DocLevelMonitorFanOutRequest
 import org.opensearch.alerting.action.DocLevelMonitorFanOutResponse
 import org.opensearch.alerting.action.GetDestinationsAction
@@ -52,12 +53,10 @@ import org.opensearch.alerting.util.use
 import org.opensearch.alerting.workflow.WorkflowRunContext
 import org.opensearch.client.Client
 import org.opensearch.client.node.NodeClient
-import org.opensearch.cluster.service.ClusterService
 import org.opensearch.common.inject.Inject
 import org.opensearch.common.settings.Settings
 import org.opensearch.common.xcontent.XContentFactory
 import org.opensearch.common.xcontent.XContentType
-import org.opensearch.commons.alerting.action.AlertingActions
 import org.opensearch.commons.alerting.model.ActionExecutionResult
 import org.opensearch.commons.alerting.model.Alert
 import org.opensearch.commons.alerting.model.DocLevelMonitorInput
@@ -74,7 +73,6 @@ import org.opensearch.core.action.ActionListener
 import org.opensearch.core.common.Strings
 import org.opensearch.core.common.bytes.BytesReference
 import org.opensearch.core.rest.RestStatus
-import org.opensearch.core.xcontent.NamedXContentRegistry
 import org.opensearch.core.xcontent.ToXContent
 import org.opensearch.core.xcontent.XContentBuilder
 import org.opensearch.index.query.BoolQueryBuilder
@@ -103,12 +101,10 @@ class TransportDocLevelMonitorFanOutAction
     transportService: TransportService,
     val client: Client,
     val actionFilters: ActionFilters,
-    val clusterService: ClusterService,
+    val runner: MonitorRunnerService,
     val settings: Settings,
-    val xContentRegistry: NamedXContentRegistry,
-    val monitorCtx: MonitorRunnerExecutionContext,
 ) : HandledTransportAction<DocLevelMonitorFanOutRequest, DocLevelMonitorFanOutResponse>(
-    AlertingActions.INDEX_MONITOR_ACTION_NAME, transportService, actionFilters, ::DocLevelMonitorFanOutRequest
+    DocLevelMonitorFanOutAction.NAME, transportService, actionFilters, ::DocLevelMonitorFanOutRequest
 ),
     SecureTransportAction {
 
@@ -120,7 +116,11 @@ class TransportDocLevelMonitorFanOutAction
         listener: ActionListener<DocLevelMonitorFanOutResponse>,
     ) {
         scope.launch {
-            executeMonitor(request, monitorCtx, listener)
+            executeMonitor(
+                request,
+                monitorCtx = runner.monitorCtx,
+                listener = listener
+            )
         }
     }
 
@@ -154,6 +154,7 @@ class TransportDocLevelMonitorFanOutAction
                 indexShardsMap[shardId.indexName] = mutableListOf(shardId.id)
             }
         }
+        val lastRunContext = mutableMapOf<String, MutableMap<String, Any>>()
         InputRunResults
         val docLevelMonitorInput = request.monitor.inputs[0] as DocLevelMonitorInput
         val queries: List<DocLevelQuery> = docLevelMonitorInput.queries
@@ -195,7 +196,9 @@ class TransportDocLevelMonitorFanOutAction
             ) { shard, maxSeqNo -> // function passed to update last run context with new max sequence number
                 indexExecutionContext.updatedLastRunContext[shard] = maxSeqNo
             }
+            lastRunContext[indexExecutionContext.concreteIndexName] = indexExecutionContext.updatedLastRunContext
         }
+
         /* if all indices are covered still in-memory docs size limit is not breached we would need to submit
                the percolate query at the end */
         if (transformedDocs.isNotEmpty()) {
@@ -269,12 +272,12 @@ class TransportDocLevelMonitorFanOutAction
         }
         listener.onResponse(
             DocLevelMonitorFanOutResponse(
-                nodeId = clusterService.localNode().id,
+                nodeId = monitorCtx.clusterService!!.localNode().id,
                 executionId = request.executionId,
                 monitorId = monitor.id,
                 shardIdFailureMap = emptyMap(),
                 findingIds = emptyList(),
-                request.indexExecutionContexts[0].updatedLastRunContext,
+                lastRunContext as MutableMap<String, Any>,
                 InputRunResults(listOf(inputRunResults)),
                 triggerResults
             )

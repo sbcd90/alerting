@@ -19,7 +19,7 @@ class DocLevelMonitorFanOutResponse : ActionResponse, ToXContentObject {
     val findingIds: List<String>
 
     // for shards not delegated to nodes sequence number would be -3 (new number shard was not queried),
-    val lastRunContexts: Map<String, Any> // partial
+    val lastRunContexts: MutableMap<String, Any> // partial
     val inputResults: InputRunResults // partial
     val triggerResults: Map<String, DocumentLevelTriggerRunResult> // partial
 
@@ -30,7 +30,7 @@ class DocLevelMonitorFanOutResponse : ActionResponse, ToXContentObject {
         monitorId = sin.readString(),
         shardIdFailureMap = sin.readMap() as Map<String, Exception>,
         findingIds = sin.readStringList(),
-        lastRunContexts = sin.readMap()!! as Map<String, Any>,
+        lastRunContexts = sin.readMap()!! as MutableMap<String, Any>,
         inputResults = InputRunResults.readFrom(sin),
         triggerResults = MonitorRunResult.suppressWarning(sin.readMap()) as Map<String, DocumentLevelTriggerRunResult> // triggerResults
     )
@@ -41,7 +41,7 @@ class DocLevelMonitorFanOutResponse : ActionResponse, ToXContentObject {
         monitorId: String,
         shardIdFailureMap: Map<String, Exception>,
         findingIds: List<String>,
-        lastRunContexts: Map<String, Any>,
+        lastRunContexts: MutableMap<String, Any>,
         inputResults: InputRunResults = InputRunResults(), // partial,
         triggerResults: Map<String, DocumentLevelTriggerRunResult> = mapOf(),
     ) : super() {
