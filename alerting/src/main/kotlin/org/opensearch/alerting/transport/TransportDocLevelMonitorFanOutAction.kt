@@ -284,7 +284,7 @@ class TransportDocLevelMonitorFanOutAction
                 )
             )
         } catch (e: Exception) {
-            log.error("${request.monitor.id} Failed to run fan_out on node ${monitorCtx.clusterService.localNode().id} due to error",e)
+            log.error("${request.monitor.id} Failed to run fan_out on node ${monitorCtx.clusterService!!.localNode().id} due to error", e)
             listener.onFailure(e)
         }
     }
@@ -1056,5 +1056,4 @@ class TransportDocLevelMonitorFanOutAction
 
         return NotificationActionConfigs(destination, channel)
     }
-}
 }
