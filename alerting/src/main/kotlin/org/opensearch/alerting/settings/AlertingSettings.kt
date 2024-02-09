@@ -168,5 +168,12 @@ class AlertingSettings {
             1,
             Setting.Property.NodeScope, Setting.Property.Dynamic
         )
+
+        val MAX_SHARDS_PER_DOC_LEVEL_MONITOR = Setting.intSetting(
+            "plugins.alerting.max_shards_per_doc_level_monitor",
+            2,
+            1,
+            Setting.Property.NodeScope, Setting.Property.Dynamic
+        )
     }
 }
