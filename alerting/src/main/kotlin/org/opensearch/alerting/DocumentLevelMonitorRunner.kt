@@ -289,7 +289,7 @@ object DocumentLevelMonitorRunner : MonitorRunner() {
                         execute(DocLevelMonitorFanOutAction.INSTANCE, docLevelMonitorFanOutRequest1, it)
                     }
                     val lastRunContextFromResponse = dlmfor.lastRunContexts as MutableMap<String, MutableMap<String, Any>>
-                    lastRunContext[concreteIndexName] = lastRunContextFromResponse[concreteIndexName] as MutableMap<String, Any>
+                    updatedLastRunContext[concreteIndexName] = lastRunContextFromResponse[concreteIndexName] as MutableMap<String, Any>
                     logger.error(dlmfor)
                 }
             }
