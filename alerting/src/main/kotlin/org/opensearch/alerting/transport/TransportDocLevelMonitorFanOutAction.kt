@@ -4,37 +4,79 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.apache.logging.log4j.LogManager
+import org.opensearch.OpenSearchSecurityException
 import org.opensearch.OpenSearchStatusException
+import org.opensearch.action.DocWriteRequest
+import org.opensearch.action.bulk.BulkRequest
+import org.opensearch.action.bulk.BulkResponse
+import org.opensearch.action.index.IndexRequest
 import org.opensearch.action.search.SearchAction
 import org.opensearch.action.search.SearchRequest
 import org.opensearch.action.search.SearchResponse
 import org.opensearch.action.support.ActionFilters
 import org.opensearch.action.support.HandledTransportAction
+import org.opensearch.action.support.WriteRequest
 import org.opensearch.alerting.MonitorRunnerExecutionContext
+import org.opensearch.alerting.MonitorRunnerService
 import org.opensearch.alerting.action.DocLevelMonitorFanOutRequest
 import org.opensearch.alerting.action.DocLevelMonitorFanOutResponse
+import org.opensearch.alerting.action.GetDestinationsAction
+import org.opensearch.alerting.action.GetDestinationsRequest
+import org.opensearch.alerting.action.GetDestinationsResponse
+import org.opensearch.alerting.model.ActionRunResult
 import org.opensearch.alerting.model.DocumentLevelTriggerRunResult
 import org.opensearch.alerting.model.IndexExecutionContext
 import org.opensearch.alerting.model.InputRunResults
 import org.opensearch.alerting.model.MonitorMetadata
 import org.opensearch.alerting.model.MonitorRunResult
+import org.opensearch.alerting.model.destination.Destination
+import org.opensearch.alerting.model.userErrorMessage
+import org.opensearch.alerting.opensearchapi.InjectorContextElement
 import org.opensearch.alerting.opensearchapi.suspendUntil
+import org.opensearch.alerting.opensearchapi.withClosableContext
+import org.opensearch.alerting.script.DocumentLevelTriggerExecutionContext
+import org.opensearch.alerting.script.QueryLevelTriggerExecutionContext
+import org.opensearch.alerting.script.TriggerExecutionContext
 import org.opensearch.alerting.settings.AlertingSettings
 import org.opensearch.alerting.util.AlertingException
+import org.opensearch.alerting.util.defaultToPerExecutionAction
+import org.opensearch.alerting.util.destinationmigration.NotificationActionConfigs
+import org.opensearch.alerting.util.destinationmigration.NotificationApiUtils
+import org.opensearch.alerting.util.destinationmigration.getTitle
+import org.opensearch.alerting.util.destinationmigration.publishLegacyNotification
+import org.opensearch.alerting.util.destinationmigration.sendNotification
+import org.opensearch.alerting.util.getActionExecutionPolicy
+import org.opensearch.alerting.util.isAllowed
+import org.opensearch.alerting.util.isTestAction
+import org.opensearch.alerting.util.use
+import org.opensearch.alerting.workflow.WorkflowRunContext
 import org.opensearch.client.Client
+import org.opensearch.client.node.NodeClient
 import org.opensearch.cluster.service.ClusterService
 import org.opensearch.common.inject.Inject
 import org.opensearch.common.settings.Settings
 import org.opensearch.common.xcontent.XContentFactory
 import org.opensearch.common.xcontent.XContentType
 import org.opensearch.commons.alerting.action.AlertingActions
+import org.opensearch.commons.alerting.model.ActionExecutionResult
+import org.opensearch.commons.alerting.model.Alert
 import org.opensearch.commons.alerting.model.DocLevelMonitorInput
 import org.opensearch.commons.alerting.model.DocLevelQuery
+import org.opensearch.commons.alerting.model.DocumentLevelTrigger
+import org.opensearch.commons.alerting.model.Finding
 import org.opensearch.commons.alerting.model.Monitor
+import org.opensearch.commons.alerting.model.Table
+import org.opensearch.commons.alerting.model.action.Action
+import org.opensearch.commons.alerting.model.action.PerAlertActionScope
+import org.opensearch.commons.alerting.util.string
+import org.opensearch.commons.notifications.model.NotificationConfigInfo
 import org.opensearch.core.action.ActionListener
+import org.opensearch.core.common.Strings
 import org.opensearch.core.common.bytes.BytesReference
 import org.opensearch.core.rest.RestStatus
 import org.opensearch.core.xcontent.NamedXContentRegistry
+import org.opensearch.core.xcontent.ToXContent
+import org.opensearch.core.xcontent.XContentBuilder
 import org.opensearch.index.query.BoolQueryBuilder
 import org.opensearch.index.query.Operator
 import org.opensearch.index.query.QueryBuilders
@@ -49,6 +91,7 @@ import org.opensearch.tasks.Task
 import org.opensearch.transport.TransportService
 import java.io.IOException
 import java.time.Instant
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import java.util.stream.Collectors
 
@@ -111,6 +154,7 @@ class TransportDocLevelMonitorFanOutAction
                 indexShardsMap[shardId.indexName] = mutableListOf(shardId.id)
             }
         }
+        InputRunResults
         val docLevelMonitorInput = request.monitor.inputs[0] as DocLevelMonitorInput
         val queries: List<DocLevelQuery> = docLevelMonitorInput.queries
         val fieldsToBeQueried = mutableSetOf<String>()
@@ -152,9 +196,6 @@ class TransportDocLevelMonitorFanOutAction
                 indexExecutionContext.updatedLastRunContext[shard] = maxSeqNo
             }
         }
-        val took = System.currentTimeMillis() - queryingStartTimeMillis
-        logger.error("PERF_DEBUG_STAT: Entire query+percolate completed in $took millis in ${request.executionId}")
-        monitorResult = monitorResult.copy(inputResults = InputRunResults(listOf(inputRunResults)))
         /* if all indices are covered still in-memory docs size limit is not breached we would need to submit
                the percolate query at the end */
         if (transformedDocs.isNotEmpty()) {
@@ -172,6 +213,165 @@ class TransportDocLevelMonitorFanOutAction
                 totalDocsQueried
             )
         }
+        val took = System.currentTimeMillis() - queryingStartTimeMillis
+        logger.error("PERF_DEBUG_STAT: Entire query+percolate completed in $took millis in ${request.executionId}")
+        monitorResult = monitorResult.copy(inputResults = InputRunResults(listOf(inputRunResults)))
+
+        /*
+             populate the map queryToDocIds with pairs of <DocLevelQuery object from queries in monitor metadata &
+             list of matched docId from inputRunResults>
+             this fixes the issue of passing id, name, tags fields of DocLevelQuery object correctly to TriggerExpressionParser
+             */
+        queries.forEach {
+            if (inputRunResults.containsKey(it.id)) {
+                queryToDocIds[it] = inputRunResults[it.id]!!
+            }
+        }
+
+        val idQueryMap: Map<String, DocLevelQuery> = queries.associateBy { it.id }
+
+        val triggerResults = mutableMapOf<String, DocumentLevelTriggerRunResult>()
+        // If there are no triggers defined, we still want to generate findings
+        if (monitor.triggers.isEmpty()) {
+            if (monitor.id != Monitor.NO_ID) {
+                logger.error("PERF_DEBUG: Creating ${docsToQueries.size} findings for monitor ${monitor.id}")
+                createFindings(monitor, monitorCtx, docsToQueries, idQueryMap, true)
+            }
+        } else {
+            monitor.triggers.forEach {
+                triggerResults[it.id] = runForEachDocTrigger(
+                    monitorCtx,
+                    monitorResult,
+                    it as DocumentLevelTrigger,
+                    monitor,
+                    idQueryMap,
+                    docsToQueries,
+                    queryToDocIds,
+                    false,
+                    executionId = request.executionId,
+                    workflowRunContext = request.workflowRunContext
+                )
+            }
+        }
+
+        // If any error happened during trigger execution, upsert monitor error alert
+        val errorMessage =
+            constructErrorMessageFromTriggerResults(triggerResults = triggerResults)
+        if (errorMessage.isNotEmpty()) {
+            monitorCtx.alertService!!.upsertMonitorErrorAlert(
+                monitor = monitor,
+                errorMessage = errorMessage,
+                executionId = request.executionId,
+                request.workflowRunContext
+            )
+        } else {
+            onSuccessfulMonitorRun(monitorCtx, monitor)
+        }
+        listener.onResponse(
+            DocLevelMonitorFanOutResponse(
+                nodeId = clusterService.localNode().id,
+                executionId = request.executionId,
+                monitorId = monitor.id,
+                shardIdFailureMap = emptyMap(),
+                findingIds = emptyList(),
+                request.indexExecutionContexts[0].updatedLastRunContext,
+                InputRunResults(listOf(inputRunResults)),
+                triggerResults
+            )
+        )
+    }
+
+    private suspend fun onSuccessfulMonitorRun(monitorCtx: MonitorRunnerExecutionContext, monitor: Monitor) {
+        monitorCtx.alertService!!.clearMonitorErrorAlert(monitor)
+        if (monitor.dataSources.alertsHistoryIndex != null) {
+            monitorCtx.alertService!!.moveClearedErrorAlertsToHistory(
+                monitor.id,
+                monitor.dataSources.alertsIndex,
+                monitor.dataSources.alertsHistoryIndex!!
+            )
+        }
+    }
+
+    private fun constructErrorMessageFromTriggerResults(
+        triggerResults: MutableMap<String, DocumentLevelTriggerRunResult>? = null,
+    ): String {
+        var errorMessage = ""
+        if (triggerResults != null) {
+            val triggersErrorBuilder = StringBuilder()
+            triggerResults.forEach {
+                if (it.value.error != null) {
+                    triggersErrorBuilder.append("[${it.key}]: [${it.value.error!!.userErrorMessage()}]").append(" | ")
+                }
+            }
+            if (triggersErrorBuilder.isNotEmpty()) {
+                errorMessage = "Trigger errors: $triggersErrorBuilder"
+            }
+        }
+        return errorMessage
+    }
+
+    private suspend fun createFindings(
+        monitor: Monitor,
+        monitorCtx: MonitorRunnerExecutionContext,
+        docsToQueries: MutableMap<String, MutableList<String>>,
+        idQueryMap: Map<String, DocLevelQuery>,
+        shouldCreateFinding: Boolean,
+        workflowExecutionId: String? = null,
+    ): List<Pair<String, String>> {
+
+        val findingDocPairs = mutableListOf<Pair<String, String>>()
+        val findings = mutableListOf<Finding>()
+        val indexRequests = mutableListOf<IndexRequest>()
+
+        docsToQueries.forEach {
+            val triggeredQueries = it.value.map { queryId -> idQueryMap[queryId]!! }
+
+            // Before the "|" is the doc id and after the "|" is the index
+            val docIndex = it.key.split("|")
+
+            val finding = Finding(
+                id = UUID.randomUUID().toString(),
+                relatedDocIds = listOf(docIndex[0]),
+                correlatedDocIds = listOf(docIndex[0]),
+                monitorId = monitor.id,
+                monitorName = monitor.name,
+                index = docIndex[1],
+                docLevelQueries = triggeredQueries,
+                timestamp = Instant.now(),
+                executionId = workflowExecutionId
+            )
+            findingDocPairs.add(Pair(finding.id, it.key))
+            findings.add(finding)
+
+            val findingStr =
+                finding.toXContent(XContentBuilder.builder(XContentType.JSON.xContent()), ToXContent.EMPTY_PARAMS)
+                    .string()
+            logger.debug("Findings: $findingStr")
+
+            if (shouldCreateFinding) {
+                indexRequests += IndexRequest(monitor.dataSources.findingsIndex)
+                    .source(findingStr, XContentType.JSON)
+                    .id(finding.id)
+                    .routing(finding.id)
+                    .opType(DocWriteRequest.OpType.CREATE)
+            }
+        }
+
+        if (indexRequests.isNotEmpty()) {
+            val bulkResponse: BulkResponse = monitorCtx.client!!.suspendUntil {
+                bulk(BulkRequest().add(indexRequests).setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE), it)
+            }
+            if (bulkResponse.hasFailures()) {
+                bulkResponse.items.forEach { item ->
+                    if (item.isFailed) {
+                        logger.debug("Failed indexing the finding ${item.id} of monitor [${monitor.id}]")
+                    }
+                }
+            } else {
+                logger.debug("[${bulkResponse.items.size}] All findings successfully indexed.")
+            }
+        }
+        return findingDocPairs
     }
 
     /** 1. Fetch data per shard for given index. (only 10000 docs are fetched.
@@ -588,5 +788,264 @@ class TransportDocLevelMonitorFanOutAction
     ): Boolean {
         return isInMemoryDocsSizeExceedingMemoryLimit(docsSizeInBytes.get(), monitorCtx) ||
             isInMemoryNumDocsExceedingMaxDocsPerPercolateQueryLimit(numDocs, monitorCtx)
+    }
+
+    private suspend fun runForEachDocTrigger(
+        monitorCtx: MonitorRunnerExecutionContext,
+        monitorResult: MonitorRunResult<DocumentLevelTriggerRunResult>,
+        trigger: DocumentLevelTrigger,
+        monitor: Monitor,
+        idQueryMap: Map<String, DocLevelQuery>,
+        docsToQueries: MutableMap<String, MutableList<String>>,
+        queryToDocIds: Map<DocLevelQuery, Set<String>>,
+        dryrun: Boolean,
+        workflowRunContext: WorkflowRunContext?,
+        executionId: String,
+    ): DocumentLevelTriggerRunResult {
+        val triggerCtx = DocumentLevelTriggerExecutionContext(monitor, trigger)
+        val triggerResult = monitorCtx.triggerService!!.runDocLevelTrigger(monitor, trigger, queryToDocIds)
+
+        val triggerFindingDocPairs = mutableListOf<Pair<String, String>>()
+
+        // TODO: Implement throttling for findings
+        val findingToDocPairs = createFindings(
+            monitor,
+            monitorCtx,
+            docsToQueries,
+            idQueryMap,
+            !dryrun && monitor.id != Monitor.NO_ID,
+            executionId
+        )
+
+        findingToDocPairs.forEach {
+            // Only pick those entries whose docs have triggers associated with them
+            if (triggerResult.triggeredDocs.contains(it.second)) {
+                triggerFindingDocPairs.add(Pair(it.first, it.second))
+            }
+        }
+
+        val actionCtx = triggerCtx.copy(
+            triggeredDocs = triggerResult.triggeredDocs,
+            relatedFindings = findingToDocPairs.map { it.first },
+            error = monitorResult.error ?: triggerResult.error
+        )
+
+        val alerts = mutableListOf<Alert>()
+        triggerFindingDocPairs.forEach {
+            val alert = monitorCtx.alertService!!.composeDocLevelAlert(
+                listOf(it.first),
+                listOf(it.second),
+                triggerCtx,
+                monitorResult.alertError() ?: triggerResult.alertError(),
+                executionId = executionId,
+                workflorwRunContext = workflowRunContext
+            )
+            alerts.add(alert)
+        }
+
+        val shouldDefaultToPerExecution = defaultToPerExecutionAction(
+            monitorCtx.maxActionableAlertCount,
+            monitorId = monitor.id,
+            triggerId = trigger.id,
+            totalActionableAlertCount = alerts.size,
+            monitorOrTriggerError = actionCtx.error
+        )
+
+        for (action in trigger.actions) {
+            val actionExecutionScope = action.getActionExecutionPolicy(monitor)!!.actionExecutionScope
+            if (actionExecutionScope is PerAlertActionScope && !shouldDefaultToPerExecution) {
+                for (alert in alerts) {
+                    val actionResults =
+                        this.runAction(action, actionCtx.copy(alerts = listOf(alert)), monitorCtx, monitor, dryrun)
+                    triggerResult.actionResultsMap.getOrPut(alert.id) { mutableMapOf() }
+                    triggerResult.actionResultsMap[alert.id]?.set(action.id, actionResults)
+                }
+            } else if (alerts.isNotEmpty()) {
+                val actionResults = this.runAction(action, actionCtx.copy(alerts = alerts), monitorCtx, monitor, dryrun)
+                for (alert in alerts) {
+                    triggerResult.actionResultsMap.getOrPut(alert.id) { mutableMapOf() }
+                    triggerResult.actionResultsMap[alert.id]?.set(action.id, actionResults)
+                }
+            }
+        }
+
+        // Alerts are saved after the actions since if there are failures in the actions, they can be stated in the alert
+        if (!dryrun && monitor.id != Monitor.NO_ID) {
+            val updatedAlerts = alerts.map { alert ->
+                val actionResults = triggerResult.actionResultsMap.getOrDefault(alert.id, emptyMap())
+                val actionExecutionResults = actionResults.values.map { actionRunResult ->
+                    ActionExecutionResult(
+                        actionRunResult.actionId,
+                        actionRunResult.executionTime,
+                        if (actionRunResult.throttled) 1 else 0
+                    )
+                }
+                alert.copy(actionExecutionResults = actionExecutionResults)
+            }
+
+            monitorCtx.retryPolicy?.let {
+                monitorCtx.alertService!!.saveAlerts(
+                    monitor.dataSources,
+                    updatedAlerts,
+                    it,
+                    routingId = monitor.id
+                )
+            }
+        }
+        return triggerResult
+    }
+
+    suspend fun runAction(
+        action: Action,
+        ctx: TriggerExecutionContext,
+        monitorCtx: MonitorRunnerExecutionContext,
+        monitor: Monitor,
+        dryrun: Boolean,
+    ): ActionRunResult {
+        return try {
+            if (ctx is QueryLevelTriggerExecutionContext && !MonitorRunnerService.isActionActionable(
+                    action,
+                    ctx.alert
+                )
+            ) {
+                return ActionRunResult(action.id, action.name, mapOf(), true, null, null)
+            }
+            val actionOutput = mutableMapOf<String, String>()
+            actionOutput[Action.SUBJECT] = if (action.subjectTemplate != null)
+                MonitorRunnerService.compileTemplate(action.subjectTemplate!!, ctx)
+            else ""
+            actionOutput[Action.MESSAGE] = MonitorRunnerService.compileTemplate(action.messageTemplate, ctx)
+            if (Strings.isNullOrEmpty(actionOutput[Action.MESSAGE])) {
+                throw IllegalStateException("Message content missing in the Destination with id: ${action.destinationId}")
+            }
+            if (!dryrun) {
+                val client = monitorCtx.client
+                client!!.threadPool().threadContext.stashContext().use {
+                    withClosableContext(
+                        InjectorContextElement(
+                            monitor.id,
+                            monitorCtx.settings!!,
+                            monitorCtx.threadPool!!.threadContext,
+                            monitor.user?.roles,
+                            monitor.user
+                        )
+                    ) {
+                        actionOutput[Action.MESSAGE_ID] = getConfigAndSendNotification(
+                            action,
+                            monitorCtx,
+                            actionOutput[Action.SUBJECT],
+                            actionOutput[Action.MESSAGE]!!
+                        )
+                    }
+                }
+            }
+            ActionRunResult(action.id, action.name, actionOutput, false, MonitorRunnerService.currentTime(), null)
+        } catch (e: Exception) {
+            ActionRunResult(action.id, action.name, mapOf(), false, MonitorRunnerService.currentTime(), e)
+        }
+    }
+
+    protected suspend fun getConfigAndSendNotification(
+        action: Action,
+        monitorCtx: MonitorRunnerExecutionContext,
+        subject: String?,
+        message: String,
+    ): String {
+        val config = getConfigForNotificationAction(action, monitorCtx)
+        if (config.destination == null && config.channel == null) {
+            throw IllegalStateException("Unable to find a Notification Channel or Destination config with id [${action.destinationId}]")
+        }
+
+        // Adding a check on TEST_ACTION Destination type here to avoid supporting it as a LegacyBaseMessage type
+        // just for Alerting integration tests
+        if (config.destination?.isTestAction() == true) {
+            return "test action"
+        }
+
+        if (config.destination?.isAllowed(monitorCtx.allowList) == false) {
+            throw IllegalStateException(
+                "Monitor contains a Destination type that is not allowed: ${config.destination.type}"
+            )
+        }
+
+        var actionResponseContent = ""
+        actionResponseContent = config.channel
+            ?.sendNotification(
+                monitorCtx.client!!,
+                config.channel.getTitle(subject),
+                message
+            ) ?: actionResponseContent
+
+        actionResponseContent = config.destination
+            ?.buildLegacyBaseMessage(
+                subject,
+                message,
+                monitorCtx.destinationContextFactory!!.getDestinationContext(config.destination)
+            )
+            ?.publishLegacyNotification(monitorCtx.client!!)
+            ?: actionResponseContent
+
+        return actionResponseContent
+    }
+
+    /**
+     * The "destination" ID referenced in a Monitor Action could either be a Notification config or a Destination config
+     * depending on whether the background migration process has already migrated it from a Destination to a Notification config.
+     *
+     * To cover both of these cases, the Notification config will take precedence and if it is not found, the Destination will be retrieved.
+     */
+    private suspend fun getConfigForNotificationAction(
+        action: Action,
+        monitorCtx: MonitorRunnerExecutionContext,
+    ): NotificationActionConfigs {
+        var destination: Destination? = null
+        var notificationPermissionException: Exception? = null
+
+        var channel: NotificationConfigInfo? = null
+        try {
+            channel =
+                NotificationApiUtils.getNotificationConfigInfo(monitorCtx.client as NodeClient, action.destinationId)
+        } catch (e: OpenSearchSecurityException) {
+            notificationPermissionException = e
+        }
+
+        // If the channel was not found, try to retrieve the Destination
+        if (channel == null) {
+            destination = try {
+                val table = Table(
+                    "asc",
+                    "destination.name.keyword",
+                    null,
+                    1,
+                    0,
+                    null
+                )
+                val getDestinationsRequest = GetDestinationsRequest(
+                    action.destinationId,
+                    0L,
+                    null,
+                    table,
+                    "ALL"
+                )
+
+                val getDestinationsResponse: GetDestinationsResponse = monitorCtx.client!!.suspendUntil {
+                    monitorCtx.client!!.execute(GetDestinationsAction.INSTANCE, getDestinationsRequest, it)
+                }
+                getDestinationsResponse.destinations.firstOrNull()
+            } catch (e: IllegalStateException) {
+                // Catching the exception thrown when the Destination was not found so the NotificationActionConfigs object can be returned
+                null
+            } catch (e: OpenSearchSecurityException) {
+                if (notificationPermissionException != null)
+                    throw notificationPermissionException
+                else
+                    throw e
+            }
+
+            if (destination == null && notificationPermissionException != null)
+                throw notificationPermissionException
+        }
+
+        return NotificationActionConfigs(destination, channel)
     }
 }

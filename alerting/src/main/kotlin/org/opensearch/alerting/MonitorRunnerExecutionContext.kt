@@ -21,6 +21,7 @@ import org.opensearch.core.xcontent.NamedXContentRegistry
 import org.opensearch.monitor.jvm.JvmStats
 import org.opensearch.script.ScriptService
 import org.opensearch.threadpool.ThreadPool
+import org.opensearch.transport.TransportService
 
 data class MonitorRunnerExecutionContext(
 
@@ -38,6 +39,7 @@ data class MonitorRunnerExecutionContext(
     var docLevelMonitorQueries: DocLevelMonitorQueries? = null,
     var workflowService: WorkflowService? = null,
     var jvmStats: JvmStats? = null,
+    val transportService: TransportService,
 
     @Volatile var retryPolicy: BackoffPolicy? = null,
     @Volatile var moveAlertsRetryPolicy: BackoffPolicy? = null,
