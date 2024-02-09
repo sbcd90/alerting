@@ -27,6 +27,8 @@ import org.opensearch.alerting.util.AlertingException
 import org.opensearch.alerting.util.ScheduledJobUtils.Companion.WORKFLOW_DELEGATE_PATH
 import org.opensearch.alerting.util.ScheduledJobUtils.Companion.WORKFLOW_MONITOR_PATH
 import org.opensearch.client.Client
+import org.opensearch.commons.alerting.action.AlertingActions
+import org.opensearch.commons.alerting.action.DeleteMonitorRequest
 import org.opensearch.commons.alerting.action.DeleteMonitorResponse
 import org.opensearch.commons.alerting.model.Monitor
 import org.opensearch.commons.alerting.model.ScheduledJob
@@ -64,6 +66,7 @@ object DeleteMonitorService :
         val deleteResponse = deleteMonitor(monitor.id, refreshPolicy)
         deleteDocLevelMonitorQueriesAndIndices(monitor)
         deleteMetadata(monitor)
+        deleteChildDocLevelMonitors(monitor, refreshPolicy)
         return DeleteMonitorResponse(deleteResponse.id, deleteResponse.version)
     }
 
@@ -144,6 +147,28 @@ object DeleteMonitorService :
             // we only log the error and don't fail the request because if monitor document has been deleted successfully,
             // we cannot retry based on this failure
             log.error("Failed to delete doc level queries from query index.", e)
+        }
+    }
+
+    private suspend fun deleteChildDocLevelMonitors(monitor: Monitor, refreshPolicy: RefreshPolicy) {
+        if (monitor.monitorType == Monitor.MonitorType.DOC_LEVEL_MONITOR) {
+            val request: SearchRequest = SearchRequest()
+                .indices(ScheduledJob.SCHEDULED_JOBS_INDEX)
+                .source(
+                    SearchSourceBuilder()
+                        .query(QueryBuilders.matchQuery("monitor.owner", monitor.id))
+                        .size(10000)
+                )
+            val response = client.suspendUntil<Client, SearchResponse> { client.search(request, it) }
+            response.hits.forEach { childMonitor ->
+                val deleteMonitorResponse = client.suspendUntil<Client, DeleteMonitorResponse> {
+                    client.execute(
+                        AlertingActions.DELETE_MONITOR_ACTION_TYPE,
+                        DeleteMonitorRequest(childMonitor.id, refreshPolicy),
+                        it
+                    )
+                }
+            }
         }
     }
 

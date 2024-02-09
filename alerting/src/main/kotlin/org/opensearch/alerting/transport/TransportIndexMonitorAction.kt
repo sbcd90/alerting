@@ -19,6 +19,9 @@ import org.opensearch.action.admin.cluster.health.ClusterHealthAction
 import org.opensearch.action.admin.cluster.health.ClusterHealthRequest
 import org.opensearch.action.admin.cluster.health.ClusterHealthResponse
 import org.opensearch.action.admin.indices.create.CreateIndexResponse
+import org.opensearch.action.admin.indices.stats.IndicesStatsAction
+import org.opensearch.action.admin.indices.stats.IndicesStatsRequest
+import org.opensearch.action.admin.indices.stats.IndicesStatsResponse
 import org.opensearch.action.get.GetRequest
 import org.opensearch.action.get.GetResponse
 import org.opensearch.action.index.IndexRequest
@@ -38,6 +41,7 @@ import org.opensearch.alerting.settings.AlertingSettings
 import org.opensearch.alerting.settings.AlertingSettings.Companion.ALERTING_MAX_MONITORS
 import org.opensearch.alerting.settings.AlertingSettings.Companion.INDEX_TIMEOUT
 import org.opensearch.alerting.settings.AlertingSettings.Companion.MAX_ACTION_THROTTLE_VALUE
+import org.opensearch.alerting.settings.AlertingSettings.Companion.MAX_SHARDS_PER_DOC_LEVEL_MONITOR
 import org.opensearch.alerting.settings.AlertingSettings.Companion.REQUEST_TIMEOUT
 import org.opensearch.alerting.settings.DestinationSettings.Companion.ALLOW_LIST
 import org.opensearch.alerting.util.AlertingException
@@ -56,6 +60,8 @@ import org.opensearch.common.xcontent.XContentFactory.jsonBuilder
 import org.opensearch.common.xcontent.XContentHelper
 import org.opensearch.common.xcontent.XContentType
 import org.opensearch.commons.alerting.action.AlertingActions
+import org.opensearch.commons.alerting.action.DeleteMonitorRequest
+import org.opensearch.commons.alerting.action.DeleteMonitorResponse
 import org.opensearch.commons.alerting.action.IndexMonitorRequest
 import org.opensearch.commons.alerting.action.IndexMonitorResponse
 import org.opensearch.commons.alerting.model.DocLevelMonitorInput
@@ -72,9 +78,6 @@ import org.opensearch.core.rest.RestStatus
 import org.opensearch.core.xcontent.NamedXContentRegistry
 import org.opensearch.core.xcontent.ToXContent
 import org.opensearch.index.query.QueryBuilders
-import org.opensearch.index.reindex.BulkByScrollResponse
-import org.opensearch.index.reindex.DeleteByQueryAction
-import org.opensearch.index.reindex.DeleteByQueryRequestBuilder
 import org.opensearch.rest.RestRequest
 import org.opensearch.search.builder.SearchSourceBuilder
 import org.opensearch.tasks.Task
@@ -114,6 +117,7 @@ class TransportIndexMonitorAction @Inject constructor(
     @Volatile private var allowList = ALLOW_LIST.get(settings)
 
     @Volatile override var filterByEnabled = AlertingSettings.FILTER_BY_BACKEND_ROLES.get(settings)
+    @Volatile private var maxShardsPerDocLevelMonitor = AlertingSettings.MAX_SHARDS_PER_DOC_LEVEL_MONITOR.get(settings)
 
     init {
         clusterService.clusterSettings.addSettingsUpdateConsumer(ALERTING_MAX_MONITORS) { maxMonitors = it }
@@ -121,6 +125,7 @@ class TransportIndexMonitorAction @Inject constructor(
         clusterService.clusterSettings.addSettingsUpdateConsumer(INDEX_TIMEOUT) { indexTimeout = it }
         clusterService.clusterSettings.addSettingsUpdateConsumer(MAX_ACTION_THROTTLE_VALUE) { maxActionThrottle = it }
         clusterService.clusterSettings.addSettingsUpdateConsumer(ALLOW_LIST) { allowList = it }
+        clusterService.clusterSettings.addSettingsUpdateConsumer(MAX_SHARDS_PER_DOC_LEVEL_MONITOR) { maxShardsPerDocLevelMonitor = it }
         listenFilterBySettingChange(clusterService)
     }
 
@@ -503,10 +508,10 @@ class TransportIndexMonitorAction @Inject constructor(
                     ToXContent.MapParams(mapOf("with_type" to "true"))
                 )}"
             )
-
+            var indexResponse: IndexResponse? = null
             try {
-                val indexResponse: IndexResponse = client.suspendUntil { client.index(indexRequest, it) }
-                val failureReasons = checkShardsFailure(indexResponse)
+                indexResponse = client.suspendUntil { client.index(indexRequest, it) }
+                val failureReasons = checkShardsFailure(indexResponse!!)
                 if (failureReasons != null) {
                     log.info(failureReasons.toString())
                     actionListener.onFailure(
@@ -514,31 +519,10 @@ class TransportIndexMonitorAction @Inject constructor(
                     )
                     return
                 }
-                var metadata: MonitorMetadata?
-                try { // delete monitor if metadata creation fails, log the right error and re-throw the error to fail listener
-                    request.monitor = request.monitor.copy(id = indexResponse.id)
-                    var (monitorMetadata: MonitorMetadata, created: Boolean) = MonitorMetadataService.getOrCreateMetadata(request.monitor)
-                    if (created == false) {
-                        log.warn("Metadata doc id:${monitorMetadata.id} exists, but it shouldn't!")
-                    }
-                    metadata = monitorMetadata
-                } catch (t: Exception) {
-                    log.error("failed to create metadata for monitor ${indexResponse.id}. deleting monitor")
-                    cleanupMonitorAfterPartialFailure(request.monitor, indexResponse)
-                    throw t
+                if (request.monitor.monitorType == Monitor.MonitorType.DOC_LEVEL_MONITOR) {
+                    val monitorShardAssignments = distributeShards(client, request.monitor.inputs[0] as DocLevelMonitorInput)
+                    indexChildMonitors(client, monitorShardAssignments, request.monitor.copy(id = indexResponse.id))
                 }
-                try {
-                    if (request.monitor.monitorType == Monitor.MonitorType.DOC_LEVEL_MONITOR) {
-                        indexDocLevelMonitorQueries(request.monitor, indexResponse.id, metadata, request.refreshPolicy)
-                    }
-                    // When inserting queries in queryIndex we could update sourceToQueryIndexMapping
-                    MonitorMetadataService.upsertMetadata(metadata, updating = true)
-                } catch (t: Exception) {
-                    log.error("failed to index doc level queries monitor ${indexResponse.id}. deleting monitor", t)
-                    cleanupMonitorAfterPartialFailure(request.monitor, indexResponse)
-                    throw t
-                }
-
                 actionListener.onResponse(
                     IndexMonitorResponse(
                         indexResponse.id,
@@ -549,6 +533,7 @@ class TransportIndexMonitorAction @Inject constructor(
                     )
                 )
             } catch (t: Exception) {
+                cleanupMonitorAfterPartialFailure(request.monitor, indexResponse!!)
                 actionListener.onFailure(AlertingException.wrap(t))
             }
         }
@@ -688,20 +673,10 @@ class TransportIndexMonitorAction @Inject constructor(
                     )
                     return
                 }
-                var updatedMetadata: MonitorMetadata
-                val (metadata, created) = MonitorMetadataService.getOrCreateMetadata(request.monitor)
-                // Recreate runContext if metadata exists
-                // Delete and insert all queries from/to queryIndex
-                if (created == false && currentMonitor.monitorType == Monitor.MonitorType.DOC_LEVEL_MONITOR) {
-                    updatedMetadata = MonitorMetadataService.recreateRunContext(metadata, currentMonitor)
-                    client.suspendUntil<Client, BulkByScrollResponse> {
-                        DeleteByQueryRequestBuilder(client, DeleteByQueryAction.INSTANCE)
-                            .source(currentMonitor.dataSources.queryIndex)
-                            .filter(QueryBuilders.matchQuery("monitor_id", currentMonitor.id))
-                            .execute(it)
-                    }
-                    indexDocLevelMonitorQueries(request.monitor, currentMonitor.id, updatedMetadata, request.refreshPolicy)
-                    MonitorMetadataService.upsertMetadata(updatedMetadata, updating = true)
+                if (currentMonitor.monitorType == Monitor.MonitorType.DOC_LEVEL_MONITOR) {
+                    deleteChildDocLevelMonitors(client, request.monitorId, request.refreshPolicy)
+                    val monitorShardAssignments = distributeShards(client, request.monitor.inputs[0] as DocLevelMonitorInput)
+                    indexChildMonitors(client, monitorShardAssignments, request.monitor.copy(id = indexResponse.id))
                 }
                 actionListener.onResponse(
                     IndexMonitorResponse(
@@ -714,6 +689,159 @@ class TransportIndexMonitorAction @Inject constructor(
                 )
             } catch (t: Exception) {
                 actionListener.onFailure(AlertingException.wrap(t))
+            }
+        }
+
+        private suspend fun indexChildMonitors(
+            client: Client,
+            monitorShardAssignments: Map<String, Set<Pair<String, String>>>,
+            parentMonitor: Monitor
+        ): List<String> {
+            val monitorIds = mutableListOf<String>()
+
+            monitorShardAssignments.forEach { monitorShardAssignment ->
+                val id = monitorShardAssignment.key
+                val shards = monitorShardAssignment.value.map { indexShardPair -> "${indexShardPair.first}:${indexShardPair.second}" }
+                var monitor = Monitor(
+                    name = parentMonitor.name,
+                    monitorType = parentMonitor.monitorType,
+                    enabled = parentMonitor.enabled,
+                    inputs = parentMonitor.inputs,
+                    schedule = parentMonitor.schedule,
+                    triggers = parentMonitor.triggers,
+                    enabledTime = parentMonitor.enabledTime,
+                    lastUpdateTime = parentMonitor.lastUpdateTime,
+                    user = parentMonitor.user,
+                    uiMetadata = mapOf(),
+                    isChild = true,
+                    shards = shards,
+                    owner = parentMonitor.id,
+                    dataSources = parentMonitor.dataSources
+                )
+                val indexRequest = IndexRequest(SCHEDULED_JOBS_INDEX)
+                    .setRefreshPolicy(request.refreshPolicy)
+                    .source(monitor.toXContentWithUser(jsonBuilder(), ToXContent.MapParams(mapOf("with_type" to "true"))))
+                    .setIfSeqNo(request.seqNo)
+                    .setIfPrimaryTerm(request.primaryTerm)
+                    .timeout(indexTimeout)
+
+                val indexResponse: IndexResponse = client.suspendUntil { client.index(indexRequest, it) }
+                val failureReasons = checkShardsFailure(indexResponse)
+                if (failureReasons != null) {
+                    log.info(failureReasons.toString())
+                    actionListener.onFailure(
+                        AlertingException.wrap(OpenSearchStatusException(failureReasons.toString(), indexResponse.status()))
+                    )
+                }
+                monitorIds.add(indexResponse.id)
+                monitor = monitor.copy(id = indexResponse.id)
+                val metadata = createChildMonitorMetadata(monitor, indexResponse)
+
+                try {
+                    indexDocLevelMonitorQueries(monitor, indexResponse.id, metadata, request.refreshPolicy)
+                    // When inserting queries in queryIndex we could update sourceToQueryIndexMapping
+                    MonitorMetadataService.upsertMetadata(metadata, updating = true)
+                } catch (t: Exception) {
+                    log.error("failed to create metadata for monitor ${indexResponse.id}. deleting monitor")
+                    cleanupMonitorAfterPartialFailure(monitor, indexResponse)
+                    throw t
+                }
+            }
+            return monitorIds
+        }
+
+        private suspend fun createChildMonitorMetadata(childMonitor: Monitor, indexMonitorResponse: IndexResponse): MonitorMetadata {
+            val metadata: MonitorMetadata?
+            try {
+                var (monitorMetadata: MonitorMetadata, created: Boolean) = MonitorMetadataService.getOrCreateMetadata(childMonitor)
+                if (created == false) {
+                    log.warn("Metadata doc id:${monitorMetadata.id} exists, but it shouldn't!")
+                }
+                metadata = monitorMetadata
+            } catch (t: Exception) {
+                log.error("failed to create metadata for monitor ${childMonitor.id}. deleting monitor")
+                cleanupMonitorAfterPartialFailure(childMonitor, indexMonitorResponse)
+                throw t
+            }
+            return metadata
+        }
+
+        private suspend fun distributeShards(client: Client, monitorInput: DocLevelMonitorInput): Map<String, Set<Pair<String, String>>> {
+            val indices = monitorInput.indices
+            val shardInfoMap = getShards(client, indices)
+
+            val totalShards = shardInfoMap.map { it.value.size }.sum()
+            var noOfDocLevelMonitors = totalShards / maxShardsPerDocLevelMonitor
+            if (totalShards % maxShardsPerDocLevelMonitor != 0) {
+                ++noOfDocLevelMonitors
+            }
+
+            val shardInfoList = mutableListOf<Pair<String, String>>()
+            shardInfoMap.forEach {
+                val index = it.key
+                val shards = it.value
+                val indexShardPairs = mutableListOf<Pair<String, String>>()
+                shards.forEach { shard ->
+                    indexShardPairs.add(Pair(index, shard))
+                }
+                shardInfoList.addAll(indexShardPairs)
+            }
+
+            val monitorShardAssignments = mutableMapOf<String, Set<Pair<String, String>>>()
+            var idx = 0
+            for (id in 1..noOfDocLevelMonitors) {
+                val monitorShardAssignment = mutableSetOf<Pair<String, String>>()
+                for (i in 1..maxShardsPerDocLevelMonitor) {
+                    if (idx < shardInfoList.size) {
+                        monitorShardAssignment.add(shardInfoList[idx++])
+                    }
+                }
+                monitorShardAssignments[id.toString()] = monitorShardAssignment
+            }
+            return monitorShardAssignments
+        }
+
+        private suspend fun getShards(client: Client, indices: List<String>): Map<String, List<String>> {
+            return indices.associateWith {
+                var index: String? = it
+                if (IndexUtils.isAlias(index!!, clusterService.state()) ||
+                    IndexUtils.isDataStream(index, clusterService.state())
+                ) {
+                    index = IndexUtils.getWriteIndex(index, clusterService.state())
+                }
+                val request = IndicesStatsRequest().indices(index).clear()
+                val response: IndicesStatsResponse =
+                    client.suspendUntil { execute(IndicesStatsAction.INSTANCE, request, it) }
+                if (response.status != RestStatus.OK) {
+                    val errorMessage = "Failed fetching index stats for index:$index"
+                    throw AlertingException(
+                        errorMessage,
+                        RestStatus.INTERNAL_SERVER_ERROR,
+                        IllegalStateException(errorMessage)
+                    )
+                }
+                val shards = response.shards.filter { it.shardRouting.primary() && it.shardRouting.active() }
+                shards.map { it.shardRouting.id.toString() }
+            }
+        }
+
+        private suspend fun deleteChildDocLevelMonitors(client: Client, monitorId: String, refreshPolicy: RefreshPolicy) {
+            val request: SearchRequest = SearchRequest()
+                .indices(ScheduledJob.SCHEDULED_JOBS_INDEX)
+                .source(
+                    SearchSourceBuilder()
+                        .query(QueryBuilders.matchQuery("monitor.owner", monitorId))
+                        .size(10000)
+                )
+            val response = client.suspendUntil<Client, SearchResponse> { client.search(request, it) }
+            response.hits.forEach { childMonitor ->
+                val deleteMonitorResponse = client.suspendUntil<Client, DeleteMonitorResponse> {
+                    client.execute(
+                        AlertingActions.DELETE_MONITOR_ACTION_TYPE,
+                        DeleteMonitorRequest(childMonitor.id, refreshPolicy),
+                        it
+                    )
+                }
             }
         }
 

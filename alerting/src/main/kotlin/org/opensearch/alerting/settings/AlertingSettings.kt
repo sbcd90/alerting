@@ -176,5 +176,25 @@ class AlertingSettings {
             Setting.Property.NodeScope,
             Setting.Property.Dynamic
         )
+
+        val REMOTE_MONITORING_ENABLED = Setting.boolSetting(
+            "plugins.alerting.remote_monitoring_enabled",
+            false,
+            Setting.Property.NodeScope, Setting.Property.Dynamic
+        )
+
+        val FINDINGS_INDEXING_BATCH_SIZE = Setting.intSetting(
+            "plugins.alerting.alert_findings_indexing_batch_size",
+            100,
+            1,
+            Setting.Property.NodeScope, Setting.Property.Dynamic
+        )
+
+        val MAX_SHARDS_PER_DOC_LEVEL_MONITOR = Setting.intSetting(
+            "plugins.alerting.max_shards_per_doc_level_monitor",
+            2,
+            1,
+            Setting.Property.NodeScope, Setting.Property.Dynamic
+        )
     }
 }

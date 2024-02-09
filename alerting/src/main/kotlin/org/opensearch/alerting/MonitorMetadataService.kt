@@ -173,9 +173,9 @@ object MonitorMetadataService :
             val monitorIndex = if (monitor.monitorType == Monitor.MonitorType.DOC_LEVEL_MONITOR) {
                 (monitor.inputs[0] as DocLevelMonitorInput).indices[0]
             } else null
-            val runContext = if (monitor.monitorType == Monitor.MonitorType.DOC_LEVEL_MONITOR) {
-                createFullRunContext(monitorIndex, metadata.lastRunContext as MutableMap<String, MutableMap<String, Any>>)
-            } else null
+            val runContext = if (monitor.monitorType == Monitor.MonitorType.DOC_LEVEL_MONITOR)
+                createFullRunContext(monitorIndex, metadata.lastRunContext as MutableMap<String, MutableMap<String, Any>>, monitor)
+            else null
             return if (runContext != null) {
                 metadata.copy(
                     lastRunContext = runContext
@@ -197,7 +197,7 @@ object MonitorMetadataService :
             (monitor.inputs[0] as DocLevelMonitorInput).indices[0]
         else null
         val runContext = if (monitor.monitorType == Monitor.MonitorType.DOC_LEVEL_MONITOR && createWithRunContext)
-            createFullRunContext(monitorIndex)
+            createFullRunContext(monitorIndex, monitor = monitor)
         else emptyMap()
         return MonitorMetadata(
             id = MonitorMetadata.getId(monitor, workflowMetadataId),
@@ -213,6 +213,7 @@ object MonitorMetadataService :
     suspend fun createFullRunContext(
         index: String?,
         existingRunContext: MutableMap<String, MutableMap<String, Any>>? = null,
+        monitor: Monitor
     ): MutableMap<String, MutableMap<String, Any>> {
         val lastRunContext = existingRunContext?.toMutableMap() ?: mutableMapOf()
         try {
@@ -233,7 +234,10 @@ object MonitorMetadataService :
 
             indices.forEach { indexName ->
                 if (!lastRunContext.containsKey(indexName)) {
-                    lastRunContext[indexName] = createRunContextForIndex(indexName)
+                    lastRunContext[indexName] = createRunContextForIndex(
+                        indexName,
+                        shardInfoList = if (monitor.isChild == true) monitor.shards else listOf()
+                    )
                 }
             }
         } catch (e: RemoteTransportException) {
@@ -251,14 +255,16 @@ object MonitorMetadataService :
         return lastRunContext
     }
 
-    suspend fun createRunContextForIndex(index: String, createdRecently: Boolean = false): MutableMap<String, Any> {
+    suspend fun createRunContextForIndex(index: String, createdRecently: Boolean = false, shardInfoList: List<String> = listOf()): MutableMap<String, Any> {
         val request = IndicesStatsRequest().indices(index).clear()
         val response: IndicesStatsResponse = client.suspendUntil { execute(IndicesStatsAction.INSTANCE, request, it) }
         if (response.status != RestStatus.OK) {
             val errorMessage = "Failed fetching index stats for index:$index"
             throw AlertingException(errorMessage, RestStatus.INTERNAL_SERVER_ERROR, IllegalStateException(errorMessage))
         }
-        val shards = response.shards.filter { it.shardRouting.primary() && it.shardRouting.active() }
+        val shards = response.shards.filter {
+            it.shardRouting.primary() && it.shardRouting.active() && shardInfoList.contains(index + ":" + it.shardRouting.id.toString())
+        }
         val lastRunContext = HashMap<String, Any>()
         lastRunContext["index"] = index
         val count = shards.size

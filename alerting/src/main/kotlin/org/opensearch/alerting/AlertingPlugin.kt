@@ -329,6 +329,7 @@ internal class AlertingPlugin : PainlessExtension, ActionPlugin, ScriptPlugin, R
             AlertingSettings.MAX_ACTION_THROTTLE_VALUE,
             AlertingSettings.FILTER_BY_BACKEND_ROLES,
             AlertingSettings.MAX_ACTIONABLE_ALERT_COUNT,
+            AlertingSettings.MAX_SHARDS_PER_DOC_LEVEL_MONITOR,
             LegacyOpenDistroAlertingSettings.INPUT_TIMEOUT,
             LegacyOpenDistroAlertingSettings.INDEX_TIMEOUT,
             LegacyOpenDistroAlertingSettings.BULK_TIMEOUT,

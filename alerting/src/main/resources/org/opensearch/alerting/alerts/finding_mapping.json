@@ -46,6 +46,12 @@
               "type" : "keyword"
             }
           }
+        },
+        "fields": {
+          "type": "text"
+        },
+        "query_field_names": {
+          "type": "text"
         }
       }
     },

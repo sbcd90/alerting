@@ -942,6 +942,20 @@ abstract class AlertingRestTestCase : ODFERestTestCase() {
         return index
     }
 
+    protected fun createTestIndex(index: String = randomAlphaOfLength(10).lowercase(Locale.ROOT), settings: Settings): String {
+        createIndex(
+            index, settings,
+            """
+                "properties" : {
+                  "test_strict_date_time" : { "type" : "date", "format" : "strict_date_time" },
+                  "test_field" : { "type" : "keyword" },
+                  "number" : { "type" : "keyword" }
+                }
+            """.trimIndent()
+        )
+        return index
+    }
+
     protected fun createTestIndex(index: String, mapping: String): String {
         createIndex(index, Settings.EMPTY, mapping.trimIndent())
         return index
@@ -1104,7 +1118,7 @@ abstract class AlertingRestTestCase : ODFERestTestCase() {
                 Collectors.joining(",", "\"", "\"")
             ) + "],"
         if (componentTemplateName == null) {
-            body += "\"template\": {\"mappings\": {$mappings}},"
+            body += "\"template\": {\"settings\": { \"number_of_shards\": 7 }, \"mappings\": {$mappings}},"
         }
         if (componentTemplateName != null) {
             body += "\"composed_of\": [\"$componentTemplateName\"],"

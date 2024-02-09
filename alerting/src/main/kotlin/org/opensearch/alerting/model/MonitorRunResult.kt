@@ -23,7 +23,7 @@ data class MonitorRunResult<TriggerResult : TriggerRunResult>(
     val monitorName: String,
     val periodStart: Instant,
     val periodEnd: Instant,
-    val error: Exception? = null,
+    var error: Exception? = null,
     val inputResults: InputRunResults = InputRunResults(),
     val triggerResults: Map<String, TriggerResult> = mapOf()
 ) : Writeable, ToXContent {
@@ -53,7 +53,7 @@ data class MonitorRunResult<TriggerResult : TriggerRunResult>(
     /** Returns error information to store in the Alert. Currently it's just the stack trace but it can be more */
     fun alertError(): AlertError? {
         if (error != null) {
-            return AlertError(Instant.now(), "Failed running monitor:\n${error.userErrorMessage()}")
+            return AlertError(Instant.now(), "Failed running monitor:\n${error!!.userErrorMessage()}")
         }
 
         if (inputResults.error != null) {

@@ -1,6 +1,6 @@
 {
   "_meta" : {
-    "schema_version": 8
+    "schema_version": 9
   },
   "properties": {
     "monitor": {
@@ -296,6 +296,15 @@
         "ui_metadata": {
           "type": "object",
           "enabled": false
+        },
+        "is_child": {
+          "type": "boolean"
+        },
+        "shards": {
+          "type": "text"
+        },
+        "child_monitors": {
+          "type": "text"
         }
       }
     },
