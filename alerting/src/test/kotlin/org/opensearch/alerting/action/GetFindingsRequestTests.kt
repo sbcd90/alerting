@@ -17,7 +17,12 @@ class GetFindingsRequestTests : OpenSearchTestCase() {
 
         val table = Table("asc", "sortString", null, 1, 0, "")
 
-        val req = GetFindingsRequest("2121", table, "1", "finding_index_name")
+        val req = GetFindingsRequest(
+            "2121",
+            table,
+            "1",
+            "finding_index_name"
+        )
         assertNotNull(req)
 
         val out = BytesStreamOutput()

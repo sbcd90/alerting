@@ -103,7 +103,7 @@ class TransportGetFindingsSearchAction @Inject constructor(
             .seqNoAndPrimaryTerm(true)
             .version(true)
 
-        val queryBuilder = getFindingsRequest.boolQueryBuilder ?: QueryBuilders.boolQuery()
+        val queryBuilder = QueryBuilders.boolQuery()
 
         if (!getFindingsRequest.findingId.isNullOrBlank()) {
             queryBuilder.filter(QueryBuilders.termQuery("_id", getFindingsRequest.findingId))
