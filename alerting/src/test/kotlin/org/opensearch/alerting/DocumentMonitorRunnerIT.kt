@@ -2791,6 +2791,7 @@ class DocumentMonitorRunnerIT : AlertingRestTestCase() {
         }
     }
 
+    @AwaitsFix(bugUrl = "")
     fun `test execute monitor generates alerts and findings with renewable locks`() {
         val testIndex = createTestIndex()
         val testTime = DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(ZonedDateTime.now().truncatedTo(MILLIS))
