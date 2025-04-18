@@ -7,18 +7,11 @@ package org.opensearch.alerting.transport
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.future.await
 import kotlinx.coroutines.launch
 import org.apache.logging.log4j.LogManager
-import org.opensearch.ExceptionsHelper
-import org.opensearch.OpenSearchException
-import org.opensearch.OpenSearchSecurityException
 import org.opensearch.OpenSearchStatusException
-import org.opensearch.ResourceAlreadyExistsException
 import org.opensearch.action.ActionRequest
-import org.opensearch.action.admin.cluster.health.ClusterHealthAction
-import org.opensearch.action.admin.cluster.health.ClusterHealthRequest
-import org.opensearch.action.admin.cluster.health.ClusterHealthResponse
-import org.opensearch.action.admin.indices.create.CreateIndexResponse
 import org.opensearch.action.get.GetRequest
 import org.opensearch.action.get.GetResponse
 import org.opensearch.action.index.IndexRequest
@@ -78,6 +71,8 @@ import org.opensearch.index.query.QueryBuilders
 import org.opensearch.index.reindex.BulkByScrollResponse
 import org.opensearch.index.reindex.DeleteByQueryAction
 import org.opensearch.index.reindex.DeleteByQueryRequestBuilder
+import org.opensearch.remote.metadata.client.PutDataObjectRequest
+import org.opensearch.remote.metadata.client.SdkClient
 import org.opensearch.rest.RestRequest
 import org.opensearch.search.builder.SearchSourceBuilder
 import org.opensearch.tasks.Task
@@ -92,6 +87,7 @@ private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO)
 class TransportIndexMonitorAction @Inject constructor(
     transportService: TransportService,
     val client: Client,
+    val sdkClient: SdkClient,
     actionFilters: ActionFilters,
     val scheduledJobIndices: ScheduledJobIndices,
     val docLevelMonitorQueries: DocLevelMonitorQueries,
@@ -215,7 +211,7 @@ class TransportIndexMonitorAction @Inject constructor(
                 index
             }
         }
-        val searchRequest = SearchRequest().indices(*updatedIndices.toTypedArray())
+        /*val searchRequest = SearchRequest().indices(*updatedIndices.toTypedArray())
             .source(SearchSourceBuilder.searchSource().size(1).query(QueryBuilders.matchAllQuery()))
         client.search(
             searchRequest,
@@ -244,7 +240,9 @@ class TransportIndexMonitorAction @Inject constructor(
                     )
                 }
             }
-        )
+        )*/
+        // User has read access to configured indices in the monitor, now create monitor with out user context.
+        IndexMonitorHandler(client, actionListener, request, user).resolveUserAndStart()
     }
 
     /**
@@ -328,7 +326,7 @@ class TransportIndexMonitorAction @Inject constructor(
         }
 
         fun start() {
-            if (!scheduledJobIndices.scheduledJobIndexExists()) {
+            /*if (!scheduledJobIndices.scheduledJobIndexExists()) {
                 scheduledJobIndices.initScheduledJobIndex(object : ActionListener<CreateIndexResponse> {
                     override fun onResponse(response: CreateIndexResponse) {
                         onCreateMappingsResponse(response.isAcknowledged)
@@ -374,7 +372,8 @@ class TransportIndexMonitorAction @Inject constructor(
                 )
             } else {
                 prepareMonitorIndexing()
-            }
+            }*/
+            prepareMonitorIndexing()
         }
 
         /**
@@ -398,7 +397,7 @@ class TransportIndexMonitorAction @Inject constructor(
                     updateMonitor()
                 }
             } else {
-                val query = QueryBuilders.boolQuery().filter(QueryBuilders.termQuery("${Monitor.MONITOR_TYPE}.type", Monitor.MONITOR_TYPE))
+                /*val query = QueryBuilders.boolQuery().filter(QueryBuilders.termQuery("${Monitor.MONITOR_TYPE}.type", Monitor.MONITOR_TYPE))
                 val searchSource = SearchSourceBuilder().query(query).timeout(requestTimeout)
                 val searchRequest = SearchRequest(SCHEDULED_JOBS_INDEX).source(searchSource)
 
@@ -413,7 +412,10 @@ class TransportIndexMonitorAction @Inject constructor(
                             actionListener.onFailure(AlertingException.wrap(t))
                         }
                     }
-                )
+                )*/
+                scope.launch {
+                    indexMonitor()
+                }
             }
         }
 
@@ -507,12 +509,11 @@ class TransportIndexMonitorAction @Inject constructor(
                 log.debug("Created monitor's backend roles: $rbacRoles")
             }
 
-            val indexRequest = IndexRequest(SCHEDULED_JOBS_INDEX)
-                .setRefreshPolicy(request.refreshPolicy)
-                .source(request.monitor.toXContentWithUser(jsonBuilder(), ToXContent.MapParams(mapOf("with_type" to "true"))))
-                .setIfSeqNo(request.seqNo)
-                .setIfPrimaryTerm(request.primaryTerm)
-                .timeout(indexTimeout)
+            log.info("hit before PutDataObjectRequest")
+            val postRequest = PutDataObjectRequest.builder()
+                .index(SCHEDULED_JOBS_INDEX)
+                .dataObject({ builder, params -> request.monitor.toXContentWithUser(builder, ToXContent.MapParams(mapOf("with_type" to "true"))) })
+                .build()
 
             log.info(
                 "Creating new monitor: ${request.monitor.toXContentWithUser(
@@ -522,7 +523,12 @@ class TransportIndexMonitorAction @Inject constructor(
             )
 
             try {
-                val indexResponse: IndexResponse = client.suspendUntil { client.index(indexRequest, it) }
+                val postResponse = sdkClient.putDataObjectAsync(postRequest).await()
+                val indexResponse = postResponse.parser()?.let { parser -> IndexResponse.fromXContent(parser) }
+                    ?: throw OpenSearchStatusException(
+                        "Failed to parse sdkClient response into IndexResponse",
+                        RestStatus.INTERNAL_SERVER_ERROR
+                    )
                 val failureReasons = checkShardsFailure(indexResponse)
                 if (failureReasons != null) {
                     log.info(failureReasons.toString())

@@ -10,7 +10,7 @@ apply plugin: 'jacoco'
 dependencies {
     compileOnly "org.opensearch:opensearch:${opensearch_version}"
     implementation "org.jetbrains.kotlin:kotlin-stdlib:${kotlin_version}"
-    api 'org.jetbrains.kotlinx:kotlinx-coroutines-core:1.1.1'
+    api "org.jetbrains.kotlinx:kotlinx-coroutines-core:${kotlin_coroutines_version}"
     api "org.jetbrains.kotlin:kotlin-stdlib-jdk8:${kotlin_version}"
     implementation "com.cronutils:cron-utils:9.1.7"
     api "org.opensearch.client:opensearch-rest-client:${opensearch_version}"
